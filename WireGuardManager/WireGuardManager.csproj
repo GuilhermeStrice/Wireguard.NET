@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <!-- <Nullable>enable</Nullable> --> <!-- Consider enabling for new projects -->
+    <!-- <ImplicitUsings>enable</ImplicitUsings> --> <!-- Consider enabling for new projects -->
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- If we were to use a specific crypto library, it would be added here. -->
+    <!-- Example: <PackageReference Include="BouncyCastle.NetCore" Version="1.9.0" /> -->
+  </ItemGroup>
+
+</Project>
