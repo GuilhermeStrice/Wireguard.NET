@@ -28,8 +28,9 @@ namespace WireGuardManager.Tests
         [Test]
         public void RunAsync_CommandNotFound_ThrowsCommandNotFoundException()
         {
+            var runner = new ProcessRunner();
             Assert.ThrowsAsync<CommandNotFoundException>(() =>
-                ProcessRunner.RunAsync("non_existent_command_blah_blah", "")
+                runner.RunAsync("non_existent_command_blah_blah", "")
             );
         }
 
@@ -39,7 +40,8 @@ namespace WireGuardManager.Tests
             string helperAppPath = GetTestHelperAppPath();
             if (!File.Exists(helperAppPath)) Assert.Inconclusive("TestHelperApp not found at " + helperAppPath);
 
-            var result = await ProcessRunner.RunAsync(helperAppPath, "echo Hello");
+            var runner = new ProcessRunner();
+            var result = await runner.RunAsync(helperAppPath, "echo Hello"); // Uses ProcessExecutionResult
             Assert.That(result.Success, Is.True);
             Assert.That(result.StandardOutput, Does.Contain("TestHelperApp: Echoing arguments.").And.Does.Contain("Hello"));
             Assert.That(result.ExitCode, Is.EqualTo(0));
@@ -51,11 +53,12 @@ namespace WireGuardManager.Tests
             string helperAppPath = GetTestHelperAppPath();
             if (!File.Exists(helperAppPath)) Assert.Inconclusive("TestHelperApp not found at " + helperAppPath);
 
-            var timeout = TimeSpan.FromMilliseconds(100); // Short timeout
-            var sleepDuration = 2000; // Long sleep
+            var runner = new ProcessRunner();
+            var timeout = TimeSpan.FromMilliseconds(200); // Increased slightly to ensure timeout occurs reliably
+            var sleepDuration = 4000;
 
             var ex = Assert.ThrowsAsync<ProcessTimeoutException>(() =>
-                ProcessRunner.RunAsync(helperAppPath, $"sleep {sleepDuration}", timeout: timeout)
+                runner.RunAsync(helperAppPath, $"sleep {sleepDuration}", timeout: timeout)
             );
 
             Assert.That(ex, Is.Not.Null);
@@ -75,10 +78,11 @@ namespace WireGuardManager.Tests
             string helperAppPath = GetTestHelperAppPath();
             if (!File.Exists(helperAppPath)) Assert.Inconclusive("TestHelperApp not found at " + helperAppPath);
 
-            var timeout = TimeSpan.FromSeconds(5); // Long timeout
-            var sleepDuration = 100; // Short sleep
+            var runner = new ProcessRunner();
+            var timeout = TimeSpan.FromSeconds(5);
+            var sleepDuration = 100;
 
-            var result = await ProcessRunner.RunAsync(helperAppPath, $"sleep {sleepDuration}", timeout: timeout);
+            var result = await runner.RunAsync(helperAppPath, $"sleep {sleepDuration}", timeout: timeout); // Uses ProcessExecutionResult
 
             Assert.That(result.Success, Is.True);
             Assert.That(result.StandardOutput, Does.Contain("TestHelperApp: Sleep finished."));

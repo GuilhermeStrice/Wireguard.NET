@@ -2,34 +2,21 @@ using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
-using System.Threading; // Required for CancellationTokenSource
+using System.Threading;
 using System.Threading.Tasks;
 using WireGuardManager.Exceptions;
 
 namespace WireGuardManager.Utilities
 {
-    public static class ProcessRunner
+    public class ProcessRunner : IProcessRunner // Made non-static, implements IProcessRunner
     {
         // Default timeouts for external processes
-        public static readonly TimeSpan DefaultShortOperationTimeout = TimeSpan.FromSeconds(15); // For quick commands like 'wg show', 'wg genkey'
-        public static readonly TimeSpan DefaultLongOperationTimeout = TimeSpan.FromSeconds(60);  // For commands that might take longer like 'wg-quick up/down', 'systemctl enable'
+        public static readonly TimeSpan DefaultShortOperationTimeout = TimeSpan.FromSeconds(15);
+        public static readonly TimeSpan DefaultLongOperationTimeout = TimeSpan.FromSeconds(60);
 
-        public class ProcessResult
-        {
-            public int ExitCode { get; }
-            public string StandardOutput { get; }
-            public string StandardError { get; }
-            public bool Success => ExitCode == 0;
+        // ProcessResult class was moved to ProcessExecutionResult.cs as a top-level class
 
-            public ProcessResult(int exitCode, string standardOutput, string standardError)
-            {
-                ExitCode = exitCode;
-                StandardOutput = standardOutput;
-                StandardError = standardError;
-            }
-        }
-
-        public static async Task<ProcessResult> RunAsync(string fileName, string arguments, string? workingDirectory = null, TimeSpan? timeout = null)
+        public async Task<ProcessExecutionResult> RunAsync(string fileName, string arguments, string? workingDirectory = null, TimeSpan? timeout = null) // Instance method, returns ProcessExecutionResult
         {
             using (var process = new Process())
             {
@@ -110,7 +97,7 @@ namespace WireGuardManager.Utilities
                 // If process was killed due to timeout, ExitCode might be unreliable or reflect the kill signal.
                 // However, the ProcessTimeoutException is the primary indicator of failure in that case.
 
-                return new ProcessResult(process.ExitCode, outputBuilder.ToString().TrimEnd('\r', '\n'), errorBuilder.ToString().TrimEnd('\r', '\n'));
+                return new ProcessExecutionResult(process.ExitCode, outputBuilder.ToString().TrimEnd('\r', '\n'), errorBuilder.ToString().TrimEnd('\r', '\n'));
             }
         }
     }

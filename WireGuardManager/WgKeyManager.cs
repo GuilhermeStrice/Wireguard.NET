@@ -8,6 +8,12 @@ namespace WireGuardManager
 {
     public static class WgKeyManager
     {
+        /// <summary>
+        /// Gets or sets the IProcessRunner instance used for executing external processes.
+        /// This can be replaced with a mock for testing.
+        /// </summary>
+        public static IProcessRunner ProcessRunnerInstance { get; set; } = new ProcessRunner();
+
         public class KeyPair
         {
             public string PrivateKey { get; }
@@ -38,7 +44,7 @@ namespace WireGuardManager
             try
             {
                 // 1. Generate Private Key
-                var genkeyResult = await ProcessRunner.RunAsync(wgPath, "genkey", timeout: ProcessRunner.DefaultShortOperationTimeout);
+                var genkeyResult = await ProcessRunnerInstance.RunAsync(wgPath, "genkey", timeout: Utilities.ProcessRunner.DefaultShortOperationTimeout);
                 if (!genkeyResult.Success || string.IsNullOrWhiteSpace(genkeyResult.StandardOutput))
                 {
                     throw new ExternalToolException(wgPath, "Failed to generate private key using 'wg genkey'.",
@@ -53,15 +59,15 @@ namespace WireGuardManager
 
                 // The command `wg pubkey < privatekeyfile` requires shell redirection.
                 // We'll invoke it via shell to ensure redirection works.
-                string pubkeyCommand = $"/bin/sh -c \"{wgPath} pubkey < '{tempPrivateKeyFile.Replace("'", "'\\''")}'\"";
-                var pubkeyResult = await ProcessRunner.RunAsync("/bin/sh", $"-c \"'{wgPath}' pubkey < '{tempPrivateKeyFile.Replace("'", "'\\''")}'\"", timeout: ProcessRunner.DefaultShortOperationTimeout);
+                // string pubkeyCommand = $"/bin/sh -c \"{wgPath} pubkey < '{tempPrivateKeyFile.Replace("'", "'\\''")}'\""; // Not directly used, just for clarity
+                var pubkeyResult = await ProcessRunnerInstance.RunAsync("/bin/sh", $"-c \"'{wgPath}' pubkey < '{tempPrivateKeyFile.Replace("'", "'\\''")}'\"", timeout: Utilities.ProcessRunner.DefaultShortOperationTimeout);
 
 
                 if (!pubkeyResult.Success || string.IsNullOrWhiteSpace(pubkeyResult.StandardOutput))
                 {
                      // Fallback: try direct echo to wg pubkey via shell (if the temp file method had issues, though less likely)
                     Console.WriteLine($"Warning: 'wg pubkey < tempfile' failed (Exit: {pubkeyResult.ExitCode}, Err: {pubkeyResult.StandardError}). Attempting echo to pubkey pipe.");
-                    var shellEchoResult = await ProcessRunner.RunAsync("/bin/sh", $"-c \"echo '{privateKey.Replace("'", "'\\''")}' | '{wgPath}' pubkey\"", timeout: ProcessRunner.DefaultShortOperationTimeout);
+                    var shellEchoResult = await ProcessRunnerInstance.RunAsync("/bin/sh", $"-c \"echo '{privateKey.Replace("'", "'\\''")}' | '{wgPath}' pubkey\"", timeout: Utilities.ProcessRunner.DefaultShortOperationTimeout);
                     if (!shellEchoResult.Success || string.IsNullOrWhiteSpace(shellEchoResult.StandardOutput)) {
                          throw new ExternalToolException(wgPath,
                             $"Failed to generate public key using '{wgPath} pubkey'. Both temp file and echo pipe methods failed.",
@@ -99,7 +105,7 @@ namespace WireGuardManager
         public static async Task<string> GeneratePresharedKeyAsync(WgManagerConfig? config = null)
         {
             string wgPath = GetWgPath(config);
-            var result = await ProcessRunner.RunAsync(wgPath, "genpsk");
+            var result = await ProcessRunnerInstance.RunAsync(wgPath, "genpsk", timeout: Utilities.ProcessRunner.DefaultShortOperationTimeout);
             if (!result.Success || string.IsNullOrWhiteSpace(result.StandardOutput))
             {
                 throw new ExternalToolException(wgPath, "Failed to generate preshared key using 'wg genpsk'.",

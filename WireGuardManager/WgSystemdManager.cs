@@ -8,6 +8,12 @@ namespace WireGuardManager
 {
     public static class WgSystemdManager
     {
+        /// <summary>
+        /// Gets or sets the IProcessRunner instance used for executing external processes.
+        /// This can be replaced with a mock for testing.
+        /// </summary>
+        public static IProcessRunner ProcessRunnerInstance { get; set; } = new ProcessRunner();
+
         private static string GetSystemctlPath(WgManagerConfig? config = null)
         {
             config ??= WgManagerConfig.Load();
@@ -46,7 +52,7 @@ WantedBy=multi-user.target
         private static async Task RunSystemctlCommandAsync(string arguments, string operationDescription, WgManagerConfig? managerConfig = null, TimeSpan? timeout = null)
         {
             string systemctlPath = GetSystemctlPath(managerConfig);
-            var result = await ProcessRunner.RunAsync(systemctlPath, arguments, timeout: timeout ?? ProcessRunner.DefaultLongOperationTimeout);
+            var result = await ProcessRunnerInstance.RunAsync(systemctlPath, arguments, timeout: timeout ?? Utilities.ProcessRunner.DefaultLongOperationTimeout);
             if (!result.Success)
             {
                 if (result.StandardError.Contains("Access denied", StringComparison.OrdinalIgnoreCase) ||
@@ -117,7 +123,7 @@ WantedBy=multi-user.target
 
             Console.WriteLine($"Checking if service {serviceFileName} is enabled...");
             // Use GetSystemctlPath with config for this direct ProcessRunner call
-            var isEnabledResult = await ProcessRunner.RunAsync(GetSystemctlPath(config), $"is-enabled {serviceFileName}", timeout: operationTimeout ?? ProcessRunner.DefaultShortOperationTimeout);
+            var isEnabledResult = await ProcessRunnerInstance.RunAsync(GetSystemctlPath(config), $"is-enabled {serviceFileName}", timeout: operationTimeout ?? Utilities.ProcessRunner.DefaultShortOperationTimeout);
 
             bool needsEnable = true;
             if (isEnabledResult.ExitCode == 0)
