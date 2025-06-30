@@ -21,14 +21,16 @@ namespace WireGuardManager
             }
         }
 
-        private static string GetWgPath() // TODO: Make configurable in Step 2.2 (Phase 2)
+        private static string GetWgPath(WgManagerConfig? config = null)
         {
-            return "wg";
+            // Load config if not provided to check for custom path
+            config ??= WgManagerConfig.Load();
+            return string.IsNullOrWhiteSpace(config.WgPath) ? "wg" : config.WgPath;
         }
 
-        public static async Task<KeyPair> GenerateKeyPairAsync()
+        public static async Task<KeyPair> GenerateKeyPairAsync(WgManagerConfig? config = null)
         {
-            string wgPath = GetWgPath();
+            string wgPath = GetWgPath(config);
             string? privateKey = null;
             string? publicKey = null;
             string? tempPrivateKeyFile = null;
@@ -94,9 +96,9 @@ namespace WireGuardManager
             }
         }
 
-        public static async Task<string> GeneratePresharedKeyAsync()
+        public static async Task<string> GeneratePresharedKeyAsync(WgManagerConfig? config = null)
         {
-            string wgPath = GetWgPath();
+            string wgPath = GetWgPath(config);
             var result = await ProcessRunner.RunAsync(wgPath, "genpsk");
             if (!result.Success || string.IsNullOrWhiteSpace(result.StandardOutput))
             {
@@ -104,6 +106,58 @@ namespace WireGuardManager
                     result.ExitCode, result.StandardOutput, result.StandardError);
             }
             return result.StandardOutput.Trim();
+        }
+
+        // --- Pure C# Key Generation using NSec.Cryptography ---
+
+        /// <summary>
+        /// Generates a new WireGuard key pair (public and private) using NSec.Cryptography.
+        /// This method does not rely on the 'wg' command-line tool.
+        /// Requires the libsodium native library to be available at runtime for NSec.
+        /// </summary>
+        /// <returns>A KeyPair object containing the Base64 encoded private and public keys.</returns>
+        public static KeyPair GenerateKeyPairPureCSharp()
+        {
+            try
+            {
+                // X25519 is used by WireGuard. NSec's KeyAgreementAlgorithm.X25519 is appropriate.
+                // Creating a new key with NSec generates a random private key.
+                using var key = NSec.Cryptography.Key.Create(NSec.Cryptography.KeyAgreementAlgorithm.X25519,
+                                                             new NSec.Cryptography.KeyCreationParameters{ ExportPolicy = NSec.Cryptography.KeyExportPolicies.AllowPlaintextExport });
+
+                byte[] privateKeyBytes = key.Export(NSec.Cryptography.KeyBlobFormat.RawPrivateKey); // libsodium's raw format for X25519 private key is 32 bytes
+                byte[] publicKeyBytes = key.PublicKey.Export(NSec.Cryptography.KeyBlobFormat.RawPublicKey); // libsodium's raw format for X25519 public key is 32 bytes
+
+                return new KeyPair(
+                    Convert.ToBase64String(privateKeyBytes),
+                    Convert.ToBase64String(publicKeyBytes)
+                );
+            }
+            catch (Exception ex) // Catch potential exceptions from NSec, e.g., DllNotFoundException if libsodium is missing
+            {
+                throw new WireGuardManagerException("Failed to generate key pair using Pure C# method (NSec.Cryptography). Ensure libsodium native library is available.", ex);
+            }
+        }
+
+        /// <summary>
+        /// Generates a new WireGuard preshared key using NSec.Cryptography.
+        /// This method does not rely on the 'wg' command-line tool.
+        /// Requires the libsodium native library to be available at runtime for NSec.
+        /// </summary>
+        /// <returns>A Base64 encoded preshared key (32 random bytes).</returns>
+        public static string GeneratePresharedKeyPureCSharp()
+        {
+            try
+            {
+                byte[] pskBytes = new byte[32];
+                // Fill with cryptographically secure random bytes
+                NSec.Cryptography.RandomGenerator.Default.GenerateBytes(pskBytes);
+                return Convert.ToBase64String(pskBytes);
+            }
+            catch (Exception ex) // Catch potential exceptions from NSec
+            {
+                throw new WireGuardManagerException("Failed to generate preshared key using Pure C# method (NSec.Cryptography). Ensure libsodium native library is available.", ex);
+            }
         }
     }
 }

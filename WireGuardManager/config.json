@@ -1,4 +1,8 @@
 {
   "allowSystemdManagement": false,
-  "systemdServicePath": "/etc/systemd/system"
+  "systemdServicePath": "/etc/systemd/system",
+  "wgPath": null,
+  "wgQuickPath": null,
+  "systemctlPath": null,
+  "wireguardConfigDirectory": "/etc/wireguard"
 }

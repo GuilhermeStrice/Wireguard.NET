@@ -55,7 +55,45 @@ namespace WireGuardManager.Tests
         {
             string psk = await WgKeyManager.GeneratePresharedKeyAsync();
 
-            Assert.That(ValidationUtils.IsValidWireGuardKey(psk), Is.True, $"Generated PresharedKey format is invalid: {psk}");
+            Assert.That(ValidationUtils.IsValidWireGuardKey(psk), Is.True, $"Generated PresharedKey (async) format is invalid: {psk}");
+        }
+
+        // Tests for Pure C# methods
+        [Test]
+        public void GenerateKeyPairPureCSharp_ReturnsValidKeyPair()
+        {
+            WgKeyManager.KeyPair keyPair;
+            try
+            {
+                keyPair = WgKeyManager.GenerateKeyPairPureCSharp();
+            }
+            catch (WireGuardManagerException ex) when (ex.InnerException is DllNotFoundException || ex.Message.Contains("libsodium"))
+            {
+                Assert.Inconclusive($"NSec.Cryptography (libsodium) native dependency not found. Skipping Pure C# test. Error: {ex.Message}");
+                return;
+            }
+
+            Assert.That(keyPair, Is.Not.Null, "KeyPair (Pure C#) should not be null.");
+            Assert.That(ValidationUtils.IsValidWireGuardKey(keyPair.PrivateKey), Is.True, $"Generated PrivateKey (Pure C#) format is invalid: {keyPair.PrivateKey}");
+            Assert.That(ValidationUtils.IsValidWireGuardKey(keyPair.PublicKey), Is.True, $"Generated PublicKey (Pure C#) format is invalid: {keyPair.PublicKey}");
+            Assert.That(keyPair.PrivateKey, Is.Not.EqualTo(keyPair.PublicKey));
+        }
+
+        [Test]
+        public void GeneratePresharedKeyPureCSharp_ReturnsValidKey()
+        {
+            string psk;
+            try
+            {
+                psk = WgKeyManager.GeneratePresharedKeyPureCSharp();
+            }
+            catch (WireGuardManagerException ex) when (ex.InnerException is DllNotFoundException || ex.Message.Contains("libsodium"))
+            {
+                Assert.Inconclusive($"NSec.Cryptography (libsodium) native dependency not found. Skipping Pure C# test. Error: {ex.Message}");
+                return;
+            }
+
+            Assert.That(ValidationUtils.IsValidWireGuardKey(psk), Is.True, $"Generated PresharedKey (Pure C#) format is invalid: {psk}");
         }
     }
 }

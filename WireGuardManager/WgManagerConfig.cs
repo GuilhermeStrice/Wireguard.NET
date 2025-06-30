@@ -9,6 +9,10 @@ namespace WireGuardManager
     {
         public bool AllowSystemdManagement { get; set; } = false;
         public string SystemdServicePath { get; set; } = "/etc/systemd/system";
+        public string? WgPath { get; set; } = null;
+        public string? WgQuickPath { get; set; } = null;
+        public string? SystemctlPath { get; set; } = null;
+        public string WireguardConfigDirectory { get; set; } = "/etc/wireguard"; // Default path
 
         private static string GetDefaultConfigPath()
         {

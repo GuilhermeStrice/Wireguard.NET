@@ -8,13 +8,23 @@ namespace WireGuardManager
 {
     public static class WgSystemdManager
     {
-        // TODO: Make SystemctlPath and WgQuickPath configurable in Step 2.2 (Phase 2)
-        private const string SystemctlPath = "systemctl";
-        private static string GetWgQuickPath() => "wg-quick";
-
-        private static string GetServiceFileContent(string interfaceName)
+        private static string GetSystemctlPath(WgManagerConfig? config = null)
         {
-            string wgQuickPath = GetWgQuickPath();
+            config ??= WgManagerConfig.Load();
+            return string.IsNullOrWhiteSpace(config.SystemctlPath) ? "systemctl" : config.SystemctlPath;
+        }
+
+        // Keep GetWgQuickPath internal to WgSystemdManager if it's only used for service file content generation
+        // Or make it accept WgManagerConfig if wg-quick path should also be configurable for service file
+        private static string GetWgQuickPath(WgManagerConfig? config = null)
+        {
+            config ??= WgManagerConfig.Load();
+            return string.IsNullOrWhiteSpace(config.WgQuickPath) ? "wg-quick" : config.WgQuickPath;
+        }
+
+        private static string GetServiceFileContent(string interfaceName, WgManagerConfig? config = null)
+        {
+            string wgQuickPath = GetWgQuickPath(config);
             return $@"# This service is managed by WireGuardManager
 [Unit]
 Description=WireGuard via wg-quick for %I
@@ -33,9 +43,10 @@ WantedBy=multi-user.target
 ";
         }
 
-        private static async Task RunSystemctlCommandAsync(string arguments, string operationDescription, TimeSpan? timeout = null)
+        private static async Task RunSystemctlCommandAsync(string arguments, string operationDescription, WgManagerConfig? managerConfig = null, TimeSpan? timeout = null)
         {
-            var result = await ProcessRunner.RunAsync(SystemctlPath, arguments, timeout: timeout ?? ProcessRunner.DefaultLongOperationTimeout);
+            string systemctlPath = GetSystemctlPath(managerConfig);
+            var result = await ProcessRunner.RunAsync(systemctlPath, arguments, timeout: timeout ?? ProcessRunner.DefaultLongOperationTimeout);
             if (!result.Success)
             {
                 if (result.StandardError.Contains("Access denied", StringComparison.OrdinalIgnoreCase) ||
@@ -51,16 +62,16 @@ WantedBy=multi-user.target
         }
 
         // Default timeout for systemctl operations, can be overridden by WgQuick if needed there.
-        private static readonly TimeSpan DefaultSystemctlTimeout = TimeSpan.FromSeconds(30);
+        // private static readonly TimeSpan DefaultSystemctlTimeout = TimeSpan.FromSeconds(30); // Now passed from WgQuick or default in RunSystemctlCommandAsync
 
         public static async Task<bool> EnsureServiceExistsAndEnabled(string interfaceName, WgManagerConfig config, TimeSpan? operationTimeout = null)
         {
-            if (!ValidationUtils.IsValidInterfaceName(interfaceName)) // Updated validation
+            if (!ValidationUtils.IsValidInterfaceName(interfaceName))
                 throw new InvalidInputException("Invalid interface name format for systemd management.", nameof(interfaceName));
 
             if (config == null) throw new ArgumentNullException(nameof(config));
 
-            TimeSpan timeout = operationTimeout ?? DefaultSystemctlTimeout;
+            // TimeSpan timeout = operationTimeout ?? DefaultSystemctlTimeout; // Timeout is now handled by RunSystemctlCommandAsync default or WgQuick override
 
             if (!config.AllowSystemdManagement)
             {
@@ -80,8 +91,8 @@ WantedBy=multi-user.target
                 Console.WriteLine($"Service file {fullServicePath} does not exist. Attempting to create...");
                 try
                 {
-                    string serviceContent = GetServiceFileContent(interfaceName);
-                    await File.WriteAllTextAsync(fullServicePath, serviceContent); // File IO is typically fast, timeout not applied here.
+                    string serviceContent = GetServiceFileContent(interfaceName, config); // Pass config for GetWgQuickPath
+                    await File.WriteAllTextAsync(fullServicePath, serviceContent);
                     Console.WriteLine($"Successfully wrote service file {fullServicePath}.");
                 }
                 catch (UnauthorizedAccessException ex)
@@ -100,11 +111,13 @@ WantedBy=multi-user.target
 
             if (!serviceFileExisted)
             {
-                await RunSystemctlCommandAsync("daemon-reload", "reloading systemd daemons", timeout);
+                // Pass the WgManagerConfig (config) to RunSystemctlCommandAsync
+                await RunSystemctlCommandAsync("daemon-reload", "reloading systemd daemons", config, operationTimeout);
             }
 
             Console.WriteLine($"Checking if service {serviceFileName} is enabled...");
-            var isEnabledResult = await ProcessRunner.RunAsync(SystemctlPath, $"is-enabled {serviceFileName}", timeout: operationTimeout ?? ProcessRunner.DefaultShortOperationTimeout);
+            // Use GetSystemctlPath with config for this direct ProcessRunner call
+            var isEnabledResult = await ProcessRunner.RunAsync(GetSystemctlPath(config), $"is-enabled {serviceFileName}", timeout: operationTimeout ?? ProcessRunner.DefaultShortOperationTimeout);
 
             bool needsEnable = true;
             if (isEnabledResult.ExitCode == 0)
@@ -128,7 +141,8 @@ WantedBy=multi-user.target
             if (needsEnable)
             {
                 Console.WriteLine($"Attempting to enable service {serviceFileName}...");
-                await RunSystemctlCommandAsync($"enable {serviceFileName}", $"enabling service {serviceFileName}", timeout);
+                // Pass the WgManagerConfig (config) to RunSystemctlCommandAsync
+                await RunSystemctlCommandAsync($"enable {serviceFileName}", $"enabling service {serviceFileName}", config, operationTimeout);
             }
             return true;
         }

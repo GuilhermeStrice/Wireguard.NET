@@ -8,13 +8,20 @@ namespace WireGuardManager
 {
     public static class WgQuick
     {
-        // TODO: Make these paths configurable in Step 2.2 (Phase 2)
-        private static string GetWgPath() => "wg";
-        private static string GetWgQuickPath() => "wg-quick";
-
-        private static async Task<ProcessRunner.ProcessResult> RunWgCommandAsync(string arguments, TimeSpan? timeout = null)
+        private static string GetWgPath(WgManagerConfig? config = null)
         {
-            string toolPath = GetWgPath();
+            config ??= WgManagerConfig.Load();
+            return string.IsNullOrWhiteSpace(config.WgPath) ? "wg" : config.WgPath;
+        }
+        private static string GetWgQuickPath(WgManagerConfig? config = null)
+        {
+            config ??= WgManagerConfig.Load();
+            return string.IsNullOrWhiteSpace(config.WgQuickPath) ? "wg-quick" : config.WgQuickPath;
+        }
+
+        private static async Task<ProcessRunner.ProcessResult> RunWgCommandAsync(string arguments, WgManagerConfig? managerConfig = null, TimeSpan? timeout = null)
+        {
+            string toolPath = GetWgPath(managerConfig);
             var result = await ProcessRunner.RunAsync(toolPath, arguments, timeout: timeout ?? ProcessRunner.DefaultShortOperationTimeout);
             if (!result.Success)
             {
@@ -29,9 +36,9 @@ namespace WireGuardManager
             return result;
         }
 
-        private static async Task<ProcessRunner.ProcessResult> RunWgQuickCommandAsync(string arguments, TimeSpan? timeout = null)
+        private static async Task<ProcessRunner.ProcessResult> RunWgQuickCommandAsync(string arguments, WgManagerConfig? managerConfig = null, TimeSpan? timeout = null)
         {
-            string toolPath = GetWgQuickPath();
+            string toolPath = GetWgQuickPath(managerConfig);
             var result = await ProcessRunner.RunAsync(toolPath, arguments, timeout: timeout ?? ProcessRunner.DefaultLongOperationTimeout);
             if (!result.Success)
             {
@@ -47,41 +54,45 @@ namespace WireGuardManager
         }
 
 
-        public static async Task<ProcessRunner.ProcessResult> SyncConf(string interfaceName, string configFilePath, TimeSpan? timeout = null)
+        public static async Task<ProcessRunner.ProcessResult> SyncConf(string interfaceName, string configFilePath, WgManagerConfig? customConfig = null, TimeSpan? timeout = null)
         {
-            if (!ValidationUtils.IsValidInterfaceName(interfaceName)) // Updated validation
+            if (!ValidationUtils.IsValidInterfaceName(interfaceName))
                 throw new InvalidInputException("Invalid interface name format.", nameof(interfaceName));
             if (string.IsNullOrWhiteSpace(configFilePath))
                 throw new InvalidInputException("Config file path cannot be null or empty.", nameof(configFilePath));
             if (!File.Exists(configFilePath))
                 throw new FileNotFoundException($"WireGuard configuration file not found for SyncConf at '{configFilePath}'.", configFilePath);
 
-            return await RunWgCommandAsync($"syncconf \"{interfaceName}\" \"{configFilePath}\"", timeout);
+            var config = customConfig ?? WgManagerConfig.Load();
+            return await RunWgCommandAsync($"syncconf \"{interfaceName}\" \"{configFilePath}\"", config, timeout);
         }
 
-        public static async Task<ProcessRunner.ProcessResult> SetConf(string interfaceName, string configFilePath, TimeSpan? timeout = null)
+        public static async Task<ProcessRunner.ProcessResult> SetConf(string interfaceName, string configFilePath, WgManagerConfig? customConfig = null, TimeSpan? timeout = null)
         {
-            if (!ValidationUtils.IsValidInterfaceName(interfaceName)) // Updated validation
+            if (!ValidationUtils.IsValidInterfaceName(interfaceName))
                 throw new InvalidInputException("Invalid interface name format.", nameof(interfaceName));
             if (string.IsNullOrWhiteSpace(configFilePath))
                 throw new InvalidInputException("Config file path cannot be null or empty.", nameof(configFilePath));
             if (!File.Exists(configFilePath))
                 throw new FileNotFoundException($"WireGuard configuration file not found for SetConf at '{configFilePath}'.", configFilePath);
 
-            return await RunWgCommandAsync($"setconf \"{interfaceName}\" \"{configFilePath}\"", timeout);
+            var config = customConfig ?? WgManagerConfig.Load();
+            return await RunWgCommandAsync($"setconf \"{interfaceName}\" \"{configFilePath}\"", config, timeout);
         }
 
-        public static async Task<ProcessRunner.ProcessResult> Show(string interfaceName, TimeSpan? timeout = null)
+        public static async Task<ProcessRunner.ProcessResult> Show(string interfaceName, WgManagerConfig? customConfig = null, TimeSpan? timeout = null)
         {
-            if (!ValidationUtils.IsValidInterfaceName(interfaceName)) // Updated validation
+            if (!ValidationUtils.IsValidInterfaceName(interfaceName))
                 throw new InvalidInputException("Invalid interface name format.", nameof(interfaceName));
 
-            return await RunWgCommandAsync($"show \"{interfaceName}\"", timeout);
+            var config = customConfig ?? WgManagerConfig.Load();
+            return await RunWgCommandAsync($"show \"{interfaceName}\"", config, timeout);
         }
 
-        public static async Task<ProcessRunner.ProcessResult> ShowAll(TimeSpan? timeout = null)
+        public static async Task<ProcessRunner.ProcessResult> ShowAll(WgManagerConfig? customConfig = null, TimeSpan? timeout = null)
         {
-            return await RunWgCommandAsync("show", timeout);
+            var config = customConfig ?? WgManagerConfig.Load();
+            return await RunWgCommandAsync("show", config, timeout);
         }
 
         public static async Task<ProcessRunner.ProcessResult> Up(string interfaceNameOrPath, WgManagerConfig? customConfig = null, TimeSpan? timeout = null)
@@ -131,23 +142,26 @@ namespace WireGuardManager
             // else if it's a path, ensure it's a valid path and ends with .conf - but wg-quick itself will validate this.
             // We might add a File.Exists check here if it's a path.
 
-            return await RunWgQuickCommandAsync($"up \"{interfaceNameOrPath}\"", timeout);
+            var configForRun = customConfig ?? WgManagerConfig.Load(); // Load if not passed, for GetWgQuickPath
+            return await RunWgQuickCommandAsync($"up \"{interfaceNameOrPath}\"", configForRun, timeout);
         }
 
-        public static async Task<ProcessRunner.ProcessResult> Down(string interfaceNameOrPath, TimeSpan? timeout = null)
+        public static async Task<ProcessRunner.ProcessResult> Down(string interfaceNameOrPath, WgManagerConfig? customConfig = null, TimeSpan? timeout = null)
         {
             if (string.IsNullOrWhiteSpace(interfaceNameOrPath)) // Could use IsValidInterfaceName OR check if it's a valid file path
                 throw new InvalidInputException("Interface name or path cannot be null or empty.", nameof(interfaceNameOrPath));
 
-            return await RunWgQuickCommandAsync($"down \"{interfaceNameOrPath}\"", timeout);
+            var config = customConfig ?? WgManagerConfig.Load();
+            return await RunWgQuickCommandAsync($"down \"{interfaceNameOrPath}\"", config, timeout);
         }
 
-        public static async Task<ProcessRunner.ProcessResult> Save(string interfaceName, TimeSpan? timeout = null)
+        public static async Task<ProcessRunner.ProcessResult> Save(string interfaceName, WgManagerConfig? customConfig = null, TimeSpan? timeout = null)
         {
-             if (!ValidationUtils.IsValidInterfaceName(interfaceName)) // Updated validation
+             if (!ValidationUtils.IsValidInterfaceName(interfaceName))
                 throw new InvalidInputException("Invalid interface name format for Save command.", nameof(interfaceName));
 
-            return await RunWgQuickCommandAsync($"save \"{interfaceName}\"", timeout);
+            var config = customConfig ?? WgManagerConfig.Load();
+            return await RunWgQuickCommandAsync($"save \"{interfaceName}\"", config, timeout);
         }
     }
 }
