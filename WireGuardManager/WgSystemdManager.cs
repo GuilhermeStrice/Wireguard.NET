@@ -2,17 +2,19 @@ using System;
 using System.IO;
 using System.Threading.Tasks;
 using WireGuardManager.Utilities;
+using WireGuardManager.Exceptions;
 
 namespace WireGuardManager
 {
     public static class WgSystemdManager
     {
-        private const string SystemctlPath = "systemctl"; // Assuming systemctl is in PATH
+        // TODO: Make SystemctlPath and WgQuickPath configurable in Step 2.2 (Phase 2)
+        private const string SystemctlPath = "systemctl";
+        private static string GetWgQuickPath() => "wg-quick";
 
         private static string GetServiceFileContent(string interfaceName)
         {
-            // Standard wg-quick@.service template.
-            // The interface name is passed as an argument to wg-quick by systemd (%I).
+            string wgQuickPath = GetWgQuickPath();
             return $@"# This service is managed by WireGuardManager
 [Unit]
 Description=WireGuard via wg-quick for %I
@@ -22,47 +24,48 @@ Wants=network.target nss-lookup.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart={GetWgQuickPath()} up %i
-ExecStop={GetWgQuickPath()} down %i
-Environment=WG_QUICK_USERSPACE_IMPLEMENTATION=boringtun # Or other, if needed. Often not specified.
-# Standard service files might also include:
-# ExecReload=/bin/bash -c 'exec {GetWgQuickPath()} strip %i && exec {GetWgQuickPath()} up %i'
-# Or just:
-# ExecReload={GetWgQuickPath()} reload %i
-# For simplicity, we'll omit ExecReload for now unless it's specifically requested.
-# SaveState=yes # Also sometimes seen, related to wg-quick saveconfig behavior
+ExecStart={wgQuickPath} up %i
+ExecStop={wgQuickPath} down %i
+Environment=WG_QUICK_USERSPACE_IMPLEMENTATION=boringtun
 
 [Install]
 WantedBy=multi-user.target
 ";
         }
 
-        private static string GetWgQuickPath()
+        private static async Task RunSystemctlCommandAsync(string arguments, string operationDescription, TimeSpan? timeout = null)
         {
-            // This could be made configurable if needed, perhaps via WgManagerConfig
-            return "wg-quick"; // Assume in PATH
+            var result = await ProcessRunner.RunAsync(SystemctlPath, arguments, timeout: timeout ?? ProcessRunner.DefaultLongOperationTimeout);
+            if (!result.Success)
+            {
+                if (result.StandardError.Contains("Access denied", StringComparison.OrdinalIgnoreCase) ||
+                    result.StandardError.Contains("Operation not permitted", StringComparison.OrdinalIgnoreCase) ||
+                    result.StandardError.Contains("Interactive authentication required", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new PermissionsException(operationDescription, $"systemctl {arguments}",
+                        new ExternalToolException(SystemctlPath, $"Permission error while {operationDescription}.", result.ExitCode, result.StandardOutput, result.StandardError));
+                }
+                throw new ExternalToolException(SystemctlPath, $"Command 'systemctl {arguments}' failed during {operationDescription}.", result.ExitCode, result.StandardOutput, result.StandardError);
+            }
+            Console.WriteLine($"Successfully executed 'systemctl {arguments}'.");
         }
 
+        // Default timeout for systemctl operations, can be overridden by WgQuick if needed there.
+        private static readonly TimeSpan DefaultSystemctlTimeout = TimeSpan.FromSeconds(30);
 
-        /// <summary>
-        /// Ensures a systemd service unit for the given WireGuard interface exists and is enabled.
-        /// This method requires appropriate (root) permissions to write to systemd directories and run systemctl.
-        /// </summary>
-        /// <param name="interfaceName">The name of the WireGuard interface (e.g., wg0).</param>
-        /// <param name="config">The library configuration specifying if systemd management is allowed.</param>
-        /// <returns>True if the service exists and is enabled (or was successfully made so), false otherwise or if not allowed by config.</returns>
-        public static async Task<bool> EnsureServiceExistsAndEnabled(string interfaceName, WgManagerConfig config)
+        public static async Task<bool> EnsureServiceExistsAndEnabled(string interfaceName, WgManagerConfig config, TimeSpan? operationTimeout = null)
         {
-            if (string.IsNullOrWhiteSpace(interfaceName))
-            {
-                Console.WriteLine("Error: Interface name cannot be empty for systemd management.");
-                return false;
-            }
+            if (!ValidationUtils.IsValidInterfaceName(interfaceName)) // Updated validation
+                throw new InvalidInputException("Invalid interface name format for systemd management.", nameof(interfaceName));
+
+            if (config == null) throw new ArgumentNullException(nameof(config));
+
+            TimeSpan timeout = operationTimeout ?? DefaultSystemctlTimeout;
 
             if (!config.AllowSystemdManagement)
             {
                 Console.WriteLine($"Systemd management is disabled by library configuration (AllowSystemdManagement=false). Skipping service check for {interfaceName}.");
-                return false; // Indicate no action taken due to config
+                return false;
             }
 
             var serviceFileName = $"wg-quick@{interfaceName}.service";
@@ -78,21 +81,16 @@ WantedBy=multi-user.target
                 try
                 {
                     string serviceContent = GetServiceFileContent(interfaceName);
-                    // Directory creation should typically not be needed for /etc/systemd/system, but good practice if path was highly configurable
-                    // string? directory = Path.GetDirectoryName(fullServicePath);
-                    // if (directory != null && !Directory.Exists(directory)) { Directory.CreateDirectory(directory); }
-                    await File.WriteAllTextAsync(fullServicePath, serviceContent);
+                    await File.WriteAllTextAsync(fullServicePath, serviceContent); // File IO is typically fast, timeout not applied here.
                     Console.WriteLine($"Successfully wrote service file {fullServicePath}.");
                 }
                 catch (UnauthorizedAccessException ex)
                 {
-                    Console.WriteLine($"Error: Permission denied writing service file {fullServicePath}. Ensure you have root privileges. {ex.Message}");
-                    return false;
+                    throw new PermissionsException("write systemd service file", fullServicePath, ex);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Error writing service file {fullServicePath}: {ex.Message}");
-                    return false;
+                    throw new WireGuardManagerException($"Error writing systemd service file {fullServicePath}.", ex);
                 }
             }
             else
@@ -100,60 +98,39 @@ WantedBy=multi-user.target
                 Console.WriteLine($"Service file {fullServicePath} already exists.");
             }
 
-            // Only run daemon-reload if we actually created or modified the file.
-            // For simplicity here, we run it if it didn't exist, assuming we created it.
-            // A more advanced check might compare content and rewrite/reload if different.
             if (!serviceFileExisted)
             {
-                Console.WriteLine("Running 'systemctl daemon-reload'...");
-                var daemonReloadResult = await ProcessRunner.RunAsync(SystemctlPath, "daemon-reload");
-                if (!daemonReloadResult.Success)
-                {
-                    Console.WriteLine($"Error: 'systemctl daemon-reload' failed. Exit Code: {daemonReloadResult.ExitCode}. Stderr: {daemonReloadResult.StandardError}");
-                    // Potentially clean up the created service file if daemon-reload fails?
-                    // For now, we'll leave it and report failure.
-                    return false;
-                }
-                Console.WriteLine("'systemctl daemon-reload' completed successfully.");
+                await RunSystemctlCommandAsync("daemon-reload", "reloading systemd daemons", timeout);
             }
 
-            // Check if service is enabled, enable if not.
-            // 'systemctl is-enabled' returns exit code 0 if enabled, 1 if disabled.
             Console.WriteLine($"Checking if service {serviceFileName} is enabled...");
-            var isEnabledResult = await ProcessRunner.RunAsync(SystemctlPath, $"is-enabled {serviceFileName}");
+            var isEnabledResult = await ProcessRunner.RunAsync(SystemctlPath, $"is-enabled {serviceFileName}", timeout: operationTimeout ?? ProcessRunner.DefaultShortOperationTimeout);
 
-            // is-enabled: 0 (enabled), 1 (disabled), >1 (error or not found)
-            // We treat "static" (exit code 0, stdout "static") also as effectively enabled for our purpose here,
-            // as it means it has no [Install] section but is available. Our template has [Install].
-            if (isEnabledResult.ExitCode == 0 && (isEnabledResult.StandardOutput.Trim() == "enabled" || isEnabledResult.StandardOutput.Trim() == "static"))
+            bool needsEnable = true;
+            if (isEnabledResult.ExitCode == 0)
             {
-                 Console.WriteLine($"Service {serviceFileName} is already enabled.");
-                 return true;
-            }
-            else if (isEnabledResult.ExitCode == 1 || (isEnabledResult.ExitCode == 0 && isEnabledResult.StandardOutput.Trim() == "disabled" )) // disabled or "bad" exit code for not enabled
-            {
-                Console.WriteLine($"Service {serviceFileName} is not enabled. Attempting to enable...");
-                var enableResult = await ProcessRunner.RunAsync(SystemctlPath, $"enable {serviceFileName}");
-                if (!enableResult.Success)
+                string outputTrimmed = isEnabledResult.StandardOutput.Trim();
+                if (outputTrimmed == "enabled" || outputTrimmed == "static")
                 {
-                    Console.WriteLine($"Error: 'systemctl enable {serviceFileName}' failed. Exit Code: {enableResult.ExitCode}. Stderr: {enableResult.StandardError}");
-                    return false;
+                    Console.WriteLine($"Service {serviceFileName} is already {outputTrimmed}.");
+                    needsEnable = false;
                 }
-                Console.WriteLine($"Successfully enabled service {serviceFileName}.");
-                return true;
-            }
-            else // Some other error with is-enabled
-            {
-                 Console.WriteLine($"Warning: 'systemctl is-enabled {serviceFileName}' returned unexpected status. Exit Code: {isEnabledResult.ExitCode}. Stdout: {isEnabledResult.StandardOutput} Stderr: {isEnabledResult.StandardError}. Assuming not enabled and attempting to enable.");
-                 var enableResult = await ProcessRunner.RunAsync(SystemctlPath, $"enable {serviceFileName}");
-                if (!enableResult.Success)
+                else
                 {
-                    Console.WriteLine($"Error: 'systemctl enable {serviceFileName}' failed after is-enabled check. Exit Code: {enableResult.ExitCode}. Stderr: {enableResult.StandardError}");
-                    return false;
+                     Console.WriteLine($"Service {serviceFileName} reported status: {outputTrimmed} (ExitCode: {isEnabledResult.ExitCode}). Will attempt to enable.");
                 }
-                Console.WriteLine($"Successfully enabled service {serviceFileName} (after unexpected is-enabled status).");
-                return true;
             }
+            else
+            {
+                 Console.WriteLine($"'systemctl is-enabled {serviceFileName}' indicated not enabled (ExitCode: {isEnabledResult.ExitCode}, Stdout: '{isEnabledResult.StandardOutput.Trim()}', Stderr: '{isEnabledResult.StandardError.Trim()}'). Will attempt to enable.");
+            }
+
+            if (needsEnable)
+            {
+                Console.WriteLine($"Attempting to enable service {serviceFileName}...");
+                await RunSystemctlCommandAsync($"enable {serviceFileName}", $"enabling service {serviceFileName}", timeout);
+            }
+            return true;
         }
     }
 }

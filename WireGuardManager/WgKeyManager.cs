@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Threading.Tasks;
 using WireGuardManager.Utilities;
+using WireGuardManager.Exceptions;
 
 namespace WireGuardManager
 {
@@ -14,80 +15,75 @@ namespace WireGuardManager
 
             public KeyPair(string privateKey, string publicKey)
             {
+                // TODO: Add validation here in Step 2.1
                 PrivateKey = privateKey;
                 PublicKey = publicKey;
             }
         }
 
-        private static string GetWgPath()
+        private static string GetWgPath() // TODO: Make configurable in Step 2.2 (Phase 2)
         {
-            // In Linux, 'wg' should be in the PATH.
-            // If it's installed in a non-standard location, users might need to configure this.
-            // For simplicity, we assume 'wg' is accessible.
-            // Could add configuration options or environment variable checks later.
             return "wg";
         }
 
         public static async Task<KeyPair> GenerateKeyPairAsync()
         {
-            string privateKey = null;
-            string publicKey = null;
-            string tempPrivateKeyFile = null;
+            string wgPath = GetWgPath();
+            string? privateKey = null;
+            string? publicKey = null;
+            string? tempPrivateKeyFile = null;
 
             try
             {
                 // 1. Generate Private Key
-                var genkeyResult = await ProcessRunner.RunAsync(GetWgPath(), "genkey");
+                var genkeyResult = await ProcessRunner.RunAsync(wgPath, "genkey", timeout: ProcessRunner.DefaultShortOperationTimeout);
                 if (!genkeyResult.Success || string.IsNullOrWhiteSpace(genkeyResult.StandardOutput))
                 {
-                    throw new Exception($"Failed to generate private key. wg genkey error: {genkeyResult.StandardError}");
+                    throw new ExternalToolException(wgPath, "Failed to generate private key using 'wg genkey'.",
+                        genkeyResult.ExitCode, genkeyResult.StandardOutput, genkeyResult.StandardError);
                 }
                 privateKey = genkeyResult.StandardOutput.Trim();
 
                 // 2. Generate Public Key from Private Key
-                // wg pubkey expects private key from stdin or a file.
-                // Using a temporary file is more robust than piping directly if there are issues with stdin handling in ProcessRunner or wg.
-
+                // Using a temporary file is more robust for ProcessRunner without direct stdin piping.
                 tempPrivateKeyFile = Path.GetTempFileName();
                 await File.WriteAllTextAsync(tempPrivateKeyFile, privateKey);
 
-                // The command `wg pubkey < privatekeyfile`
-                var pubkeyResult = await ProcessRunner.RunAsync(GetWgPath(), $"pubkey < \"{tempPrivateKeyFile}\"");
+                // The command `wg pubkey < privatekeyfile` requires shell redirection.
+                // We'll invoke it via shell to ensure redirection works.
+                string pubkeyCommand = $"/bin/sh -c \"{wgPath} pubkey < '{tempPrivateKeyFile.Replace("'", "'\\''")}'\"";
+                var pubkeyResult = await ProcessRunner.RunAsync("/bin/sh", $"-c \"'{wgPath}' pubkey < '{tempPrivateKeyFile.Replace("'", "'\\''")}'\"", timeout: ProcessRunner.DefaultShortOperationTimeout);
 
-                // Alternative: try piping if the above has issues with shell redirection.
-                // This would require ProcessRunner to support redirecting standard input.
-                // For now, we assume the file method is more straightforward with current ProcessRunner.
-                // If direct piping is preferred:
-                // var pubkeyResult = await ProcessRunner.RunAsync(GetWgPath(), "pubkey", inputForStdin: privateKey);
-                // This would require modifying ProcessRunner to accept `inputForStdin` and write to `process.StandardInput`.
 
                 if (!pubkeyResult.Success || string.IsNullOrWhiteSpace(pubkeyResult.StandardOutput))
                 {
-                    // Let's try to read the public key from the standard output of `wg genkey | wg pubkey` if the previous method fails
-                    // This is a common pattern but requires shell interpretation for the pipe.
-                    // We can do this by explicitly invoking a shell.
-                    var shellResult = await ProcessRunner.RunAsync("/bin/sh", $"-c \"echo '{privateKey.Replace("'", "'\\''")}' | {GetWgPath()} pubkey\"");
-                    if (!shellResult.Success || string.IsNullOrWhiteSpace(shellResult.StandardOutput)) {
-                         throw new Exception($"Failed to generate public key. wg pubkey error: {pubkeyResult.StandardError} (file method) and {shellResult.StandardError} (pipe method)");
+                     // Fallback: try direct echo to wg pubkey via shell (if the temp file method had issues, though less likely)
+                    Console.WriteLine($"Warning: 'wg pubkey < tempfile' failed (Exit: {pubkeyResult.ExitCode}, Err: {pubkeyResult.StandardError}). Attempting echo to pubkey pipe.");
+                    var shellEchoResult = await ProcessRunner.RunAsync("/bin/sh", $"-c \"echo '{privateKey.Replace("'", "'\\''")}' | '{wgPath}' pubkey\"", timeout: ProcessRunner.DefaultShortOperationTimeout);
+                    if (!shellEchoResult.Success || string.IsNullOrWhiteSpace(shellEchoResult.StandardOutput)) {
+                         throw new ExternalToolException(wgPath,
+                            $"Failed to generate public key using '{wgPath} pubkey'. Both temp file and echo pipe methods failed.",
+                            shellEchoResult.ExitCode, shellEchoResult.StandardOutput, shellEchoResult.StandardError);
                     }
-                    publicKey = shellResult.StandardOutput.Trim();
-
-                } else {
+                    publicKey = shellEchoResult.StandardOutput.Trim();
+                }
+                else
+                {
                      publicKey = pubkeyResult.StandardOutput.Trim();
                 }
 
-
                 if (string.IsNullOrWhiteSpace(privateKey) || string.IsNullOrWhiteSpace(publicKey))
                 {
-                    throw new Exception("Key generation resulted in one or more empty keys.");
+                    // This case should ideally be caught by the checks above throwing ExternalToolException
+                    throw new WireGuardManagerException("Key generation resulted in one or more empty keys, despite tool success reports.");
                 }
 
                 return new KeyPair(privateKey, publicKey);
             }
-            catch (Exception ex)
+            catch (WireGuardManagerException) { throw; } // Re-throw our specific exceptions
+            catch (Exception ex) // Catch other unexpected errors (e.g., file system errors for temp file)
             {
-                // Log or handle more gracefully
-                throw new Exception("Error during key pair generation: " + ex.Message, ex);
+                throw new WireGuardManagerException("An unexpected error occurred during key pair generation.", ex);
             }
             finally
             {
@@ -100,10 +96,12 @@ namespace WireGuardManager
 
         public static async Task<string> GeneratePresharedKeyAsync()
         {
-            var result = await ProcessRunner.RunAsync(GetWgPath(), "genpsk");
+            string wgPath = GetWgPath();
+            var result = await ProcessRunner.RunAsync(wgPath, "genpsk");
             if (!result.Success || string.IsNullOrWhiteSpace(result.StandardOutput))
             {
-                throw new Exception($"Failed to generate preshared key. wg genpsk error: {result.StandardError}");
+                throw new ExternalToolException(wgPath, "Failed to generate preshared key using 'wg genpsk'.",
+                    result.ExitCode, result.StandardOutput, result.StandardError);
             }
             return result.StandardOutput.Trim();
         }

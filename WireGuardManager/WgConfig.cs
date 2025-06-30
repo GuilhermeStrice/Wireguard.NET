@@ -3,7 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Text.RegularExpressions;
+// using System.Text.RegularExpressions; // No longer needed with new parsing approach
+using WireGuardManager.Exceptions;
 
 namespace WireGuardManager
 {
@@ -22,8 +23,8 @@ namespace WireGuardManager
             if (peer == null) throw new ArgumentNullException(nameof(peer));
             if (Peers.Any(p => p.PublicKey == peer.PublicKey))
             {
-                // Or throw an exception, or update existing
-                Console.WriteLine($"Warning: Peer with PublicKey {peer.PublicKey} already exists. Consider updating instead of adding.");
+                // Consider throwing InvalidOperationException or a custom DuplicatePeerException
+                Console.WriteLine($"Warning: Peer with PublicKey {peer.PublicKey} already exists. Not adding duplicate.");
                 return;
             }
             Peers.Add(peer);
@@ -31,6 +32,9 @@ namespace WireGuardManager
 
         public bool RemovePeer(string publicKey)
         {
+            if (string.IsNullOrWhiteSpace(publicKey))
+                throw new InvalidInputException("PublicKey cannot be null or whitespace for RemovePeer.", nameof(publicKey));
+
             var peerToRemove = Peers.FirstOrDefault(p => p.PublicKey == publicKey);
             if (peerToRemove != null)
             {
@@ -39,8 +43,10 @@ namespace WireGuardManager
             return false;
         }
 
-        public WgPeerConfig GetPeer(string publicKey)
+        public WgPeerConfig? GetPeer(string publicKey)
         {
+            if (string.IsNullOrWhiteSpace(publicKey))
+                throw new InvalidInputException("PublicKey cannot be null or whitespace for GetPeer.", nameof(publicKey));
             return Peers.FirstOrDefault(p => p.PublicKey == publicKey);
         }
 
@@ -48,141 +54,170 @@ namespace WireGuardManager
         {
             var sb = new StringBuilder();
             sb.Append(Interface.ToString());
-            sb.AppendLine(); // Ensure a blank line after [Interface] section
+            sb.AppendLine();
 
             foreach (var peer in Peers)
             {
                 sb.Append(peer.ToString());
-                sb.AppendLine(); // Ensure a blank line after each [Peer] section
+                sb.AppendLine();
             }
-            return sb.ToString().TrimEnd(); // Trim trailing newlines
+            return sb.ToString().TrimEnd();
         }
 
         public void ToFile(string filePath)
         {
-            File.WriteAllText(filePath, ToString());
+            if (string.IsNullOrWhiteSpace(filePath))
+                throw new InvalidInputException("File path cannot be null or empty for ToFile.", nameof(filePath));
+            try
+            {
+                File.WriteAllText(filePath, ToString());
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                throw new PermissionsException("write configuration file", filePath, ex);
+            }
+            catch (Exception ex) // Catch other IO exceptions like DirectoryNotFoundException, IOException, etc.
+            {
+                throw new WireGuardManagerException($"Failed to write configuration to file '{filePath}'.", ex);
+            }
         }
 
         public static WgConfig Parse(string configString)
         {
             if (string.IsNullOrWhiteSpace(configString))
-                throw new ArgumentException("Config string cannot be null or empty.", nameof(configString));
+                throw new InvalidInputException("Config string cannot be null or empty for Parse.", nameof(configString));
 
-            var lines = configString.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                                    .Select(line => line.Trim())
-                                    .Where(line => !string.IsNullOrEmpty(line) && !line.StartsWith("#")) // Ignore comments and empty lines
-                                    .ToList();
+            var linesWithNumbers = configString.Split(new[] { '\r', '\n' }, StringSplitOptions.None)
+                                            .Select((line, index) => new { Text = line.Trim(), Number = index + 1 })
+                                            .Where(l => !string.IsNullOrEmpty(l.Text) && !l.Text.StartsWith("#"))
+                                            .ToList();
 
-            WgServerConfig serverConfig = null;
+            WgServerConfig? serverConfig = null;
             List<WgPeerConfig> peers = new List<WgPeerConfig>();
-            WgPeerConfig currentPeer = null;
+            WgPeerConfig? currentPeer = null;
 
-            // First pass to find [Interface] PrivateKey, as it's mandatory for WgServerConfig constructor
-            string serverPrivateKey = null;
-            bool inInterfaceSection = false;
-            foreach (var line in lines)
+            int currentLineNumForException = 0;
+            string currentLineTextForException = string.Empty;
+
+            try
             {
-                if (line.Equals("[Interface]", StringComparison.OrdinalIgnoreCase))
+                // First pass to find [Interface] PrivateKey, as it's mandatory for WgServerConfig constructor
+                string? serverPrivateKey = null;
+                bool inInterfaceSectionForPK = false;
+                foreach (var lineInfo in linesWithNumbers)
                 {
-                    inInterfaceSection = true;
-                    continue;
-                }
-                if (line.Equals("[Peer]", StringComparison.OrdinalIgnoreCase))
-                {
-                    inInterfaceSection = false; // Moved to a peer section
-                    continue;
-                }
+                    currentLineNumForException = lineInfo.Number;
+                    currentLineTextForException = lineInfo.Text;
 
-                if (inInterfaceSection)
-                {
-                    var parts = line.Split(new[] { '=' }, 2).Select(p => p.Trim()).ToArray();
-                    if (parts.Length == 2 && parts[0].Equals("PrivateKey", StringComparison.OrdinalIgnoreCase))
+                    if (lineInfo.Text.Equals("[Interface]", StringComparison.OrdinalIgnoreCase))
                     {
-                        serverPrivateKey = parts[1];
-                        break;
+                        inInterfaceSectionForPK = true;
+                        continue;
+                    }
+                    if (lineInfo.Text.Equals("[Peer]", StringComparison.OrdinalIgnoreCase))
+                    {
+                        inInterfaceSectionForPK = false;
+                        continue;
+                    }
+
+                    if (inInterfaceSectionForPK)
+                    {
+                        var parts = lineInfo.Text.Split(new[] { '=' }, 2);
+                        if (parts.Length == 2 && parts[0].Trim().Equals("PrivateKey", StringComparison.OrdinalIgnoreCase))
+                        {
+                            serverPrivateKey = parts[1].Trim();
+                            break;
+                        }
                     }
                 }
-            }
 
-            if (string.IsNullOrWhiteSpace(serverPrivateKey))
-            {
-                throw new FormatException("PrivateKey not found in [Interface] section or [Interface] section missing.");
-            }
-            serverConfig = new WgServerConfig(serverPrivateKey);
-
-
-            inInterfaceSection = false; // Reset for second pass
-            foreach (var line in lines)
-            {
-                if (line.Equals("[Interface]", StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(serverPrivateKey))
                 {
-                    inInterfaceSection = true;
-                    if (currentPeer != null) // Finalize previous peer if any
+                    throw new WireGuardConfigParseException("Mandatory PrivateKey not found in [Interface] section or [Interface] section missing.", null, null);
+                }
+                // Assuming WgServerConfig constructor will validate the private key internally later (Step 2.1)
+                serverConfig = new WgServerConfig(serverPrivateKey);
+
+
+                bool inInterfaceSection = false;
+                foreach (var lineInfo in linesWithNumbers)
+                {
+                    currentLineNumForException = lineInfo.Number;
+                    currentLineTextForException = lineInfo.Text;
+
+                    if (lineInfo.Text.Equals("[Interface]", StringComparison.OrdinalIgnoreCase))
                     {
-                        peers.Add(currentPeer);
+                        inInterfaceSection = true;
+                        if (currentPeer != null) peers.Add(currentPeer);
                         currentPeer = null;
+                        continue;
                     }
-                    continue;
-                }
 
-                if (line.Equals("[Peer]", StringComparison.OrdinalIgnoreCase))
-                {
-                    inInterfaceSection = false;
-                    if (currentPeer != null) // Add the previously parsed peer before starting a new one
+                    if (lineInfo.Text.Equals("[Peer]", StringComparison.OrdinalIgnoreCase))
                     {
-                        peers.Add(currentPeer);
+                        inInterfaceSection = false;
+                        if (currentPeer != null) peers.Add(currentPeer);
+                        currentPeer = null;
+                        continue;
                     }
-                    // We need PublicKey for constructor, but it might not be the first line.
-                    // We'll create a temporary peer and fill its PublicKey later.
-                    // This is tricky. Let's find PublicKey first for the current peer block.
-                    // This parsing logic needs to be more robust.
 
-                    // Simplified approach: Assume PublicKey is the first key after [Peer] or parse the whole block.
-                    // For now, we'll assume PublicKey is present.
-                    // A better parser would collect all key-values for a section then build the object.
-                    currentPeer = null; // Will be created when PublicKey is found
-                    continue;
-                }
+                    var kvp = lineInfo.Text.Split(new[] { '=' }, 2);
+                    if (kvp.Length != 2) {
+                        // Allow empty lines or lines without '=' if they are not section headers and not within a section expecting K=V
+                         if (!lineInfo.Text.StartsWith("[") && (inInterfaceSection || currentPeer != null))
+                            throw new WireGuardConfigParseException("Malformed key-value pair.", lineInfo.Number, lineInfo.Text);
+                        continue;
+                    }
 
-                var kvp = line.Split(new[] { '=' }, 2);
-                if (kvp.Length != 2) continue; // Skip malformed lines
+                    string key = kvp[0].Trim();
+                    string value = kvp[1].Trim();
 
-                string key = kvp[0].Trim();
-                string value = kvp[1].Trim();
+                    if (string.IsNullOrEmpty(key))
+                         throw new WireGuardConfigParseException("Key cannot be empty in a key-value pair.", lineInfo.Number, lineInfo.Text);
 
-                if (inInterfaceSection && serverConfig != null)
-                {
-                    ParseInterfaceLine(serverConfig, key, value);
-                }
-                else if (!inInterfaceSection)
-                {
-                    if (key.Equals("PublicKey", StringComparison.OrdinalIgnoreCase))
+
+                    if (inInterfaceSection)
                     {
-                        if (currentPeer != null && currentPeer.PublicKey != value) // Starting a new peer implicitly by new PublicKey
+                        if (key.Equals("PrivateKey", StringComparison.OrdinalIgnoreCase)) continue;
+                        ParseInterfaceLine(serverConfig, key, value, lineInfo.Number, lineInfo.Text);
+                    }
+                    else // In Peer section or preparing for one
+                    {
+                        if (key.Equals("PublicKey", StringComparison.OrdinalIgnoreCase))
                         {
-                            peers.Add(currentPeer);
+                            if (currentPeer != null && currentPeer.PublicKey != value) peers.Add(currentPeer);
+                            if (currentPeer == null || currentPeer.PublicKey != value)
+                            {
+                                // Assuming WgPeerConfig constructor will validate the public key internally later (Step 2.1)
+                                currentPeer = new WgPeerConfig(value);
+                            }
                         }
-                        // Only create a new peer if the public key is different or if currentPeer is null
-                        if (currentPeer == null || currentPeer.PublicKey != value)
+                        else if (currentPeer != null)
                         {
-                             currentPeer = new WgPeerConfig(value);
+                            ParsePeerLine(currentPeer, key, value, lineInfo.Number, lineInfo.Text);
                         }
-                    }
-                    else if (currentPeer != null) // Ensure currentPeer is initialized (PublicKey was found)
-                    {
-                        ParsePeerLine(currentPeer, key, value);
+                        else // Key/value outside a known peer context (PublicKey not yet defined for current peer)
+                        {
+                             throw new WireGuardConfigParseException($"Orphaned peer configuration line found before a [Peer] section's PublicKey.", lineInfo.Number, lineInfo.Text);
+                        }
                     }
                 }
+
+                if (currentPeer != null) peers.Add(currentPeer);
+            }
+            catch (WireGuardManagerException) { throw; } // Re-throw our custom exceptions
+            catch (ArgumentException ex) // Catch ArgumentExceptions from WgServerConfig/WgPeerConfig constructors if they throw early
+            {
+                throw new WireGuardConfigParseException($"Invalid value for key (e.g. PrivateKey or PublicKey). {ex.Message}", currentLineNumForException, currentLineTextForException, ex);
+            }
+            catch (Exception ex) // Catch any other unexpected errors during parsing
+            {
+                throw new WireGuardConfigParseException($"An unexpected error occurred during configuration parsing at/near line {currentLineNumForException}: '{currentLineTextForException}'.", currentLineNumForException, currentLineTextForException, ex);
             }
 
-            if (currentPeer != null) // Add the last peer
+            if (serverConfig == null) // Should be caught by PrivateKey check, but as a safeguard
             {
-                peers.Add(currentPeer);
-            }
-
-            if (serverConfig == null) // Should have been created if PrivateKey was found
-            {
-                throw new FormatException("[Interface] section not found or is incomplete.");
+                 throw new WireGuardConfigParseException("[Interface] section not found or is incomplete.", null, null);
             }
 
             var config = new WgConfig(serverConfig);
@@ -190,48 +225,87 @@ namespace WireGuardManager
             return config;
         }
 
-        private static void ParseInterfaceLine(WgServerConfig serverConfig, string key, string value)
+        private static void ParseInterfaceLine(WgServerConfig serverConfig, string key, string value, int lineNumber, string lineContent)
         {
-            // PrivateKey is handled by constructor
-            if (key.Equals("Address", StringComparison.OrdinalIgnoreCase))
-                serverConfig.Address.AddRange(value.Split(',').Select(s => s.Trim()));
-            else if (key.Equals("ListenPort", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out int port))
-                serverConfig.ListenPort = port;
-            else if (key.Equals("DNS", StringComparison.OrdinalIgnoreCase))
-                serverConfig.Dns.AddRange(value.Split(',').Select(s => s.Trim()));
-            else if (key.Equals("MTU", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out int mtu))
-                serverConfig.Mtu = mtu;
-            else if (key.Equals("PostUp", StringComparison.OrdinalIgnoreCase))
-                serverConfig.PostUp.Add(value); // wg allows multiple PostUp lines
-            else if (key.Equals("PostDown", StringComparison.OrdinalIgnoreCase))
-                serverConfig.PostDown.Add(value); // wg allows multiple PostDown lines
-            else if (key.Equals("SaveConfig", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out bool sc))
-                 serverConfig.SaveConfig = sc;
-            // Ignore unknown keys for now
+            try
+            {
+                if (key.Equals("Address", StringComparison.OrdinalIgnoreCase))
+                    serverConfig.Address.AddRange(value.Split(',').Select(s => s.Trim()));
+                else if (key.Equals("ListenPort", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (int.TryParse(value, out int port) && port >= 0 && port <= 65535) serverConfig.ListenPort = port;
+                    else throw new WireGuardConfigParseException($"Invalid ListenPort value: '{value}'. Must be an integer between 0 and 65535.", lineNumber, lineContent);
+                }
+                else if (key.Equals("DNS", StringComparison.OrdinalIgnoreCase))
+                    serverConfig.Dns.AddRange(value.Split(',').Select(s => s.Trim()));
+                else if (key.Equals("MTU", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (int.TryParse(value, out int mtu) && mtu >= 576) serverConfig.Mtu = mtu; // Typical lower bound for MTU
+                    else throw new WireGuardConfigParseException($"Invalid MTU value: '{value}'. Must be a reasonable integer (e.g., >= 576).", lineNumber, lineContent);
+                }
+                else if (key.Equals("PostUp", StringComparison.OrdinalIgnoreCase))
+                    serverConfig.PostUp.Add(value);
+                else if (key.Equals("PostDown", StringComparison.OrdinalIgnoreCase))
+                    serverConfig.PostDown.Add(value);
+                else if (key.Equals("SaveConfig", StringComparison.OrdinalIgnoreCase))
+                {
+                     if (bool.TryParse(value, out bool sc)) serverConfig.SaveConfig = sc;
+                     else throw new WireGuardConfigParseException($"Invalid SaveConfig value: '{value}'. Must be 'true' or 'false'.", lineNumber, lineContent);
+                }
+                // else { Console.WriteLine($"Warning: Unknown key '{key}' in [Interface] section at line {lineNumber}. Ignoring."); }
+            }
+            catch (WireGuardConfigParseException) { throw; }
+            catch (Exception ex)
+            {
+                throw new WireGuardConfigParseException($"Error processing [Interface] key '{key}' with value '{value}'", lineNumber, lineContent, ex);
+            }
         }
 
-        private static void ParsePeerLine(WgPeerConfig peerConfig, string key, string value)
+        private static void ParsePeerLine(WgPeerConfig peerConfig, string key, string value, int lineNumber, string lineContent)
         {
-            // PublicKey is handled by constructor
-            if (key.Equals("PresharedKey", StringComparison.OrdinalIgnoreCase))
-                peerConfig.PresharedKey = value;
-            else if (key.Equals("AllowedIPs", StringComparison.OrdinalIgnoreCase))
-                peerConfig.AllowedIPs.AddRange(value.Split(',').Select(s => s.Trim()));
-            else if (key.Equals("Endpoint", StringComparison.OrdinalIgnoreCase))
-                peerConfig.Endpoint = value;
-            else if (key.Equals("PersistentKeepalive", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out int pk))
-                peerConfig.PersistentKeepalive = pk;
-            // Ignore unknown keys
+            try
+            {
+                if (key.Equals("PresharedKey", StringComparison.OrdinalIgnoreCase))
+                    peerConfig.PresharedKey = value; // Validation will be added in Step 2.1
+                else if (key.Equals("AllowedIPs", StringComparison.OrdinalIgnoreCase))
+                    peerConfig.AllowedIPs.AddRange(value.Split(',').Select(s => s.Trim())); // Validation in Step 2.2
+                else if (key.Equals("Endpoint", StringComparison.OrdinalIgnoreCase))
+                    peerConfig.Endpoint = value; // Validation in Step 2.2
+                else if (key.Equals("PersistentKeepalive", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (int.TryParse(value, out int pk) && pk >= 0 && pk <= 65535) peerConfig.PersistentKeepalive = pk; // Common range
+                    else throw new WireGuardConfigParseException($"Invalid PersistentKeepalive value: '{value}'. Must be an integer (e.g., 0-65535).", lineNumber, lineContent);
+                }
+                // else { Console.WriteLine($"Warning: Unknown key '{key}' in [Peer] section for peer {peerConfig.PublicKey.Substring(0,8)}... at line {lineNumber}. Ignoring."); }
+            }
+            catch (WireGuardConfigParseException) { throw; }
+            catch (Exception ex)
+            {
+                throw new WireGuardConfigParseException($"Error processing [Peer] key '{key}' with value '{value}' for peer {peerConfig.PublicKey.Substring(0,8)}...", lineNumber, lineContent, ex);
+            }
         }
-
 
         public static WgConfig FromFile(string filePath)
         {
+            if (string.IsNullOrWhiteSpace(filePath))
+                throw new InvalidInputException("File path cannot be null or empty for FromFile.", nameof(filePath));
             if (!File.Exists(filePath))
-                throw new FileNotFoundException("Configuration file not found.", filePath);
+                throw new FileNotFoundException($"Configuration file not found at '{filePath}'.", filePath);
 
-            var configString = File.ReadAllText(filePath);
-            return Parse(configString);
+            try
+            {
+                var configString = File.ReadAllText(filePath);
+                return Parse(configString);
+            }
+            catch (FileNotFoundException) { throw; }
+            catch (UnauthorizedAccessException ex)
+            {
+                throw new PermissionsException("read configuration file", filePath, ex);
+            }
+            catch (Exception ex)
+            {
+                throw new WireGuardManagerException($"Failed to read or parse configuration file '{filePath}'.", ex);
+            }
         }
     }
 }

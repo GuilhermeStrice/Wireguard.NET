@@ -1,12 +1,19 @@
 using System;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
+using System.Threading; // Required for CancellationTokenSource
 using System.Threading.Tasks;
+using WireGuardManager.Exceptions;
 
 namespace WireGuardManager.Utilities
 {
     public static class ProcessRunner
     {
+        // Default timeouts for external processes
+        public static readonly TimeSpan DefaultShortOperationTimeout = TimeSpan.FromSeconds(15); // For quick commands like 'wg show', 'wg genkey'
+        public static readonly TimeSpan DefaultLongOperationTimeout = TimeSpan.FromSeconds(60);  // For commands that might take longer like 'wg-quick up/down', 'systemctl enable'
+
         public class ProcessResult
         {
             public int ExitCode { get; }
@@ -22,7 +29,7 @@ namespace WireGuardManager.Utilities
             }
         }
 
-        public static async Task<ProcessResult> RunAsync(string fileName, string arguments, string workingDirectory = null)
+        public static async Task<ProcessResult> RunAsync(string fileName, string arguments, string? workingDirectory = null, TimeSpan? timeout = null)
         {
             using (var process = new Process())
             {
@@ -46,19 +53,62 @@ namespace WireGuardManager.Utilities
                 try
                 {
                     process.Start();
-                    process.BeginOutputReadLine();
-                    process.BeginErrorReadLine();
-
-                    // Consider adding a timeout
-                    await process.WaitForExitAsync(); // .NET 5+
-                                                      // For older .NET, you might need a more complex way to wait or use Task.Run for process.WaitForExit()
+                }
+                catch (Win32Exception ex) when (ex.NativeErrorCode == 2)
+                {
+                    throw new CommandNotFoundException(fileName, ex);
                 }
                 catch (Exception ex)
                 {
-                    // Handle exceptions during process start, e.g., file not found
-                    return new ProcessResult(-1, string.Empty, $"Failed to start process {fileName}: {ex.Message}");
+                    throw new ExternalToolException(fileName, $"Failed to start process '{fileName} {arguments}'.", ex);
                 }
 
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+
+                bool exitedGracefully = true;
+                CancellationTokenSource? cts = null;
+                if (timeout.HasValue)
+                {
+                    cts = new CancellationTokenSource(timeout.Value);
+                    try
+                    {
+                        await process.WaitForExitAsync(cts.Token);
+                    }
+                    catch (TaskCanceledException) // Catches OperationCanceledException as well
+                    {
+                        exitedGracefully = false;
+                        try
+                        {
+                            if (!process.HasExited)
+                            {
+                                process.Kill(true); // Kill entire process tree if possible
+                                Console.WriteLine($"Warning: Process '{fileName} {arguments}' timed out after {timeout.Value.TotalSeconds}s and was killed.");
+                            }
+                        }
+                        catch (Exception killEx)
+                        {
+                            // Log or handle failure to kill, but the timeout exception is primary
+                            Console.WriteLine($"Warning: Failed to kill timed-out process '{fileName} {arguments}'. {killEx.Message}");
+                        }
+                        throw new ProcessTimeoutException(fileName, timeout.Value, $"{fileName} {arguments}");
+                    }
+                    finally
+                    {
+                        cts?.Dispose();
+                    }
+                }
+                else
+                {
+                    await process.WaitForExitAsync();
+                }
+
+                // Ensure all output is processed after exit, especially if timeout occurred close to exit
+                // but WaitForExitAsync might need a bit more time for async pipes to flush.
+                // A small delay or a more robust pipe reading mechanism might be needed for edge cases.
+                // For now, relying on BeginOutputReadLine/BeginErrorReadLine to complete.
+                // If process was killed due to timeout, ExitCode might be unreliable or reflect the kill signal.
+                // However, the ProcessTimeoutException is the primary indicator of failure in that case.
 
                 return new ProcessResult(process.ExitCode, outputBuilder.ToString().TrimEnd('\r', '\n'), errorBuilder.ToString().TrimEnd('\r', '\n'));
             }

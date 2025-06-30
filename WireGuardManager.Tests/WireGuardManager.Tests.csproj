@@ -22,6 +22,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\WireGuardManager\WireGuardManager.csproj" />
+    <ProjectReference Include="TestHelperApp\TestHelperApp.csproj">
+      <OutputItemType>Exe</OutputItemType>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </ProjectReference>
   </ItemGroup>
 
 </Project>
