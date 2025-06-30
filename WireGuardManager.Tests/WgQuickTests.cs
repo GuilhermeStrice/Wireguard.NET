@@ -3,19 +3,45 @@ using WireGuardManager;
 using WireGuardManager.Utilities;
 using System.Threading.Tasks;
 using System.IO;
+using System; // For StringWriter, Console
+using System.Text.Json; // For JsonSerializer (if creating temp config file)
 
 namespace WireGuardManager.Tests
 {
     [TestFixture]
     public class WgQuickTests
     {
-        // These tests interact with 'wg' and 'wg-quick' commands.
-        // Some may require specific setup or permissions to run successfully.
+        private string _testDir = null!;
+        private string _tempConfigJsonPath = null!;
+
+        [SetUp]
+        public void SetUp()
+        {
+            _testDir = Path.Combine(TestContext.CurrentContext.TestDirectory, "WgQuickTestDir");
+            Directory.CreateDirectory(_testDir);
+            _tempConfigJsonPath = Path.Combine(_testDir, "test_config.json");
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            if (Directory.Exists(_testDir))
+            {
+                Directory.Delete(_testDir, true);
+            }
+        }
+
+        private void CreateTestWgManagerConfig(bool allowSystemd, string systemdPath)
+        {
+            var configData = new { AllowSystemdManagement = allowSystemd, SystemdServicePath = systemdPath };
+            File.WriteAllText(_tempConfigJsonPath, JsonSerializer.Serialize(configData));
+        }
+
 
         [Test]
         public async Task ShowAll_ExecutesSuccessfully()
         {
-            ProcessRunner.ProcessResult result = null;
+            ProcessRunner.ProcessResult? result = null;
             try
             {
                 result = await WgQuick.ShowAll();
@@ -30,58 +56,132 @@ namespace WireGuardManager.Tests
             }
 
             Assert.That(result, Is.Not.Null, "ProcessResult should not be null.");
-            // 'wg show' with no interfaces up/configured might return exit code 0 and empty stdout,
-            // or exit code 1 if it considers "no interfaces" an error state for 'show all'.
-            // Typically, it returns 0 even if no interfaces exist.
-            // If 'wg' is not installed, ProcessRunner should ideally throw.
             Assert.That(result.ExitCode, Is.EqualTo(0), $"wg show exited with code {result.ExitCode}. Stderr: {result.StandardError}");
-            // StandardOutput can be empty if no interfaces are configured.
             Assert.That(result.StandardOutput, Is.Not.Null);
         }
 
-        // To properly test SyncConf, SetConf, Up, Down, we would need:
-        // 1. A dummy interface or a way to manage WireGuard interfaces in a test environment (e.g., network namespaces).
-        // 2. Root privileges or CAP_NET_ADMIN capability for the test runner.
-        // This is complex for automated unit/integration tests without a dedicated test environment.
-        // For now, we'll focus on what can be tested with minimal privilege.
-
-        // Example of how a SyncConf test *might* look (requires setup):
-        /*
         [Test]
-        [Explicit("Requires WireGuard interface 'wgtest0' and root/CAP_NET_ADMIN")]
-        public async Task SyncConf_AppliesConfiguration()
+        public async Task Up_InterfaceName_AllowSystemdFalse_DoesNotAttemptSystemdAndCallsWgQuickUp()
         {
-            // Arrange: Create a dummy interface 'wgtest0' (e.g., using ip link add wgtest0 type wireguard)
-            // Ensure user has rights: sudo setcap cap_net_admin+eip $(which wg) OR run tests as root.
+            CreateTestWgManagerConfig(false, "/fake/systemd");
+            var config = WgManagerConfig.Load(_tempConfigJsonPath);
 
-            string interfaceName = "wgtest0"; // A pre-existing or test-created interface
-            var serverKey = await WgKeyManager.GenerateKeyPairAsync(); // Requires wg
-            var serverConfig = new WgServerConfig(serverKey.PrivateKey) { ListenPort = 51899 }; // Use a unique port
-            var wgConfig = new WgConfig(serverConfig);
+            using var sw = new StringWriter();
+            var originalOut = Console.Out;
+            Console.SetOut(sw);
 
-            var tempConfigFile = Path.GetTempFileName();
+            ProcessRunner.ProcessResult? upResult = null;
             try
             {
-                wgConfig.ToFile(tempConfigFile);
-
-                // Act
-                var result = await WgQuick.SyncConf(interfaceName, tempConfigFile);
-
-                // Assert
-                Assert.That(result.Success, Is.True, $"SyncConf failed: {result.StandardError}");
-
-                // Optionally, verify with 'wg show wgtest0'
-                var showResult = await WgQuick.Show(interfaceName);
-                Assert.That(showResult.Success, Is.True);
-                Assert.That(showResult.StandardOutput, Does.Contain(serverKey.PublicKey.Substring(0,10))); // Check if public key part is shown
-                Assert.That(showResult.StandardOutput, Does.Contain("listening port: 51899"));
+                // "wgtestnonexistent" is unlikely to exist, so wg-quick up will likely fail, which is fine.
+                // We are testing the flow, not the success of wg-quick up itself here.
+                upResult = await WgQuick.Up("wgtestnonexistent", config);
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                Assert.Inconclusive($"'wg-quick' command not found. {ex.Message}");
             }
             finally
             {
-                if (File.Exists(tempConfigFile)) File.Delete(tempConfigFile);
-                // Clean up dummy interface: sudo ip link del wgtest0
+                Console.SetOut(originalOut);
             }
+
+            string output = sw.ToString();
+            Assert.That(output, Does.Contain("Attempting implicit systemd service check for interface 'wgtestnonexistent'. AllowSystemdManagement: False"));
+            Assert.That(output, Does.Not.Contain("Ensuring systemd service for wgtestnonexistent"), "Should not try to ensure service if AllowSystemdManagement is false.");
+
+            Assert.That(upResult, Is.Not.Null, "wg-quick up should have been attempted.");
+            // wg-quick up for a non-existent interface (without a corresponding conf file) typically returns 1
+            Assert.That(upResult.ExitCode, Is.Not.EqualTo(0), "wg-quick up for a dummy interface should ideally fail or indicate no action.");
         }
-        */
+
+        [Test]
+        public async Task Up_InterfaceName_AllowSystemdTrue_AttemptsSystemdAndCallsWgQuickUp()
+        {
+            // This test will attempt actual systemd operations if systemctl is present.
+            // We'll use a fake systemd path for file creation, but systemctl calls are global.
+            CreateTestWgManagerConfig(true, Path.Combine(_testDir, "fakesystemd_allowtrue"));
+            Directory.CreateDirectory(Path.Combine(_testDir, "fakesystemd_allowtrue")); // Ensure fake path exists
+            var config = WgManagerConfig.Load(_tempConfigJsonPath);
+
+            using var sw = new StringWriter();
+            var originalOut = Console.Out;
+            Console.SetOut(sw);
+
+            ProcessRunner.ProcessResult? upResult = null;
+            try
+            {
+                upResult = await WgQuick.Up("wgtest99", config); // Use a unique name
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                 Assert.Inconclusive($"'wg-quick' or 'systemctl' command not found. {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                // Catch other exceptions that might arise from systemctl interactions
+                TestContext.Progress.WriteLine($"Exception during WgQuick.Up: {ex}");
+                // Allow to proceed to check output and upResult
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+
+            string output = sw.ToString();
+            TestContext.Progress.WriteLine($"Console output for Up_InterfaceName_AllowSystemdTrue:\n{output}");
+
+            Assert.That(output, Does.Contain("Attempting implicit systemd service check for interface 'wgtest99'. AllowSystemdManagement: True"));
+            Assert.That(output, Does.Contain("Ensuring systemd service for wgtest99"), "Should try to ensure service.");
+            // Whether it says "Service file ... does not exist. Attempting to create..." or "already exists" depends on systemctl's actual state and permissions.
+            // And "systemctl daemon-reload" / "systemctl enable" logs.
+
+            Assert.That(upResult, Is.Not.Null, "wg-quick up should have been attempted.");
+            // Exit code of wg-quick up will depend on actual system state, permissions, and if wgtest99.conf exists.
+            // If systemd part failed due to permissions, serviceOk might be false, and wg-quick up would still run.
+            if (output.Contains("Failed to ensure systemd service for 'wgtest99'") || output.Contains("Error: 'systemctl"))
+            {
+                 Assert.Warn("Systemd management part seems to have failed (e.g., permissions). This is expected if not run as root.");
+            }
+            else if (output.Contains("Systemd service for 'wgtest99' ensured successfully"))
+            {
+                TestContext.Progress.WriteLine("Systemd part reported success. Manual cleanup of wgtest99 service might be needed if run as root: sudo systemctl disable wg-quick@wgtest99.service");
+            }
+             Assert.Pass("Test for WgQuick.Up with AllowSystemdManagement=true completed. Check console output for details on systemd interaction. wg-quick up was called.");
+        }
+
+        [Test]
+        public async Task Up_FilePath_DoesNotAttemptSystemdAndCallsWgQuickUp()
+        {
+            CreateTestWgManagerConfig(true, "/fake/systemd"); // Systemd allowed, but should be ignored for file paths
+            var config = WgManagerConfig.Load(_tempConfigJsonPath);
+
+            string fakeConfFilePath = Path.Combine(_testDir, "mytestwg.conf");
+            File.WriteAllText(fakeConfFilePath, "#dummy wg config");
+
+            using var sw = new StringWriter();
+            var originalOut = Console.Out;
+            Console.SetOut(sw);
+
+            ProcessRunner.ProcessResult? upResult = null;
+            try
+            {
+                upResult = await WgQuick.Up(fakeConfFilePath, config);
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                 Assert.Inconclusive($"'wg-quick' command not found. {ex.Message}");
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+
+            string output = sw.ToString();
+            Assert.That(output, Does.Not.Contain("Attempting implicit systemd service check"), "Should not attempt systemd check for file paths.");
+
+            Assert.That(upResult, Is.Not.Null, "wg-quick up should have been attempted.");
+            // Exit code depends on wg-quick's handling of the dummy file.
+        }
     }
 }
