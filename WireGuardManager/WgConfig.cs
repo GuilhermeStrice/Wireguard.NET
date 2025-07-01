@@ -8,6 +8,10 @@ using WireGuardManager.Exceptions;
 
 namespace WireGuardManager
 {
+    /// <summary>
+    /// Represents a complete WireGuard configuration, including one interface and multiple peers.
+    /// Provides methods for parsing from and saving to WireGuard .conf file format.
+    /// </summary>
     public class WgConfig
     {
         public static IFileSystem FileSystemProvider { get; set; } = new StandardFileSystem();

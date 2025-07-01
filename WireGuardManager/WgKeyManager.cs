@@ -6,6 +6,10 @@ using WireGuardManager.Exceptions;
 
 namespace WireGuardManager
 {
+    /// <summary>
+    /// Provides functionality for generating WireGuard cryptographic keys.
+    /// Supports generation via the 'wg' command-line tool or using a Pure C# cryptographic library (NSec.Cryptography).
+    /// </summary>
     public static class WgKeyManager
     {
         /// <summary>
@@ -13,21 +17,42 @@ namespace WireGuardManager
         /// This can be replaced with a mock for testing.
         /// </summary>
         public static IProcessRunner ProcessRunnerInstance { get; set; } = new ProcessRunner();
+        // FileSystemProvider was here, but it's not used by WgKeyManager after the previous refactor.
+        // It's used by WgKeyManagerTests, but not WgKeyManager itself if GenerateKeyPairAsync uses FileSystemProvider on its own.
+        // Ah, GenerateKeyPairAsync DOES use FileSystemProvider. It needs to be here.
+        public static IFileSystem FileSystemProvider { get; set; } = new StandardFileSystem();
 
+
+        /// <summary>
+        /// Represents a WireGuard cryptographic key pair (private and public keys).
+        /// </summary>
         public class KeyPair
         {
+            /// <summary>
+            /// Gets the Base64 encoded private key.
+            /// </summary>
             public string PrivateKey { get; }
+
+            /// <summary>
+            /// Gets the Base64 encoded public key.
+            /// </summary>
             public string PublicKey { get; }
 
+            /// <summary>
+            /// Initializes a new instance of the <see cref="KeyPair"/> class.
+            /// </summary>
+            /// <param name="privateKey">The private key. It is expected to be a valid WireGuard Base64 key.</param>
+            /// <param name="publicKey">The public key. It is expected to be a valid WireGuard Base64 key.</param>
             public KeyPair(string privateKey, string publicKey)
             {
-                // TODO: Add validation here in Step 2.1
+                // Basic validation could be added here, or rely on generators/callers.
+                // For now, assuming valid keys are passed. Validation is in ValidationUtils.
                 PrivateKey = privateKey;
                 PublicKey = publicKey;
             }
         }
 
-        private static async Task<string> GetWgPathAsync(WgManagerConfig? config = null) // Made async
+        private static async Task<string> GetWgPathAsync(WgManagerConfig? config = null)
         {
             // Load config if not provided to check for custom path
             config ??= await WgManagerConfig.LoadAsync(); // Use await and LoadAsync

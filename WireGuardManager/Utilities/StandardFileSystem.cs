@@ -4,81 +4,80 @@ using System.Threading.Tasks;
 namespace WireGuardManager.Utilities
 {
     /// <summary>
-    /// Standard implementation of IFileSystem using System.IO.File and System.IO.Path.
+    /// Implements the <see cref="IFileSystem"/> interface using standard <see cref="System.IO"/> operations.
+    /// This class provides the default, real file system interactions for the library.
     /// </summary>
     public class StandardFileSystem : IFileSystem
     {
+        /// <inheritdoc/>
         public bool FileExists(string? path)
         {
             return File.Exists(path);
         }
 
+        /// <inheritdoc/>
         public Task<string> ReadAllTextAsync(string path)
         {
             return File.ReadAllTextAsync(path);
         }
 
+        /// <inheritdoc/>
         public Task WriteAllTextAsync(string path, string? contents)
         {
             return File.WriteAllTextAsync(path, contents ?? string.Empty);
         }
 
+        /// <inheritdoc/>
         public void DeleteFile(string path)
         {
             File.Delete(path);
         }
 
+        /// <inheritdoc/>
         public string GetTempFileName()
         {
             return Path.GetTempFileName();
         }
 
+        /// <inheritdoc/>
         public void CopyFile(string sourceFileName, string destFileName, bool overwrite)
         {
             File.Copy(sourceFileName, destFileName, overwrite);
         }
 
+        /// <inheritdoc/>
         public void EnsureDirectoryExists(string path)
         {
-            string? directoryName = Path.GetDirectoryName(path);
-            // If path is a directory itself, GetDirectoryName might return its parent.
-            // If path is already a root or just a filename, GetDirectoryName might be null/empty.
-            // We want to ensure the target directory for a file, or the directory itself if path is a dir.
+            // This implementation aims to create the directory if 'path' itself is meant to be a directory,
+            // or the containing directory if 'path' is a file path.
+            if (string.IsNullOrWhiteSpace(path)) return;
 
-            // If 'path' is intended to be a directory that should exist:
-            if (!string.IsNullOrEmpty(path) && !Directory.Exists(path) && (File.GetAttributes(path) & FileAttributes.Directory) == FileAttributes.Directory)
-            {
-                 Directory.CreateDirectory(path);
-            }
-            // If 'path' is a file path, ensure its containing directory exists:
-            else if (!string.IsNullOrEmpty(directoryName) && !Directory.Exists(directoryName))
-            {
-                Directory.CreateDirectory(directoryName);
-            }
-            // If path is a directory that might not have a trailing slash, Path.GetDirectoryName might give parent.
-            // A more robust way for "ensure this directory exists"
-            if (!Directory.Exists(path) && !File.Exists(path)) // Check if it's not an existing file
-            {
-                 // Heuristic: if it doesn't have an extension, or ends with a separator, assume it's a directory path.
-                 // This is not foolproof. For this library's use, paths will likely be well-defined.
-                 if (!Path.HasExtension(path) || path.EndsWith(Path.DirectorySeparatorChar) || path.EndsWith(Path.AltDirectorySeparatorChar))
-                 {
-                    Directory.CreateDirectory(path);
-                 }
-            }
-        }
+            string? directoryToEnsure = null;
 
-        // Simpler EnsureDirectoryExists for the directory containing a given file path
-        public void EnsureContainingDirectoryExists(string filePath)
-        {
-            string? directoryName = Path.GetDirectoryName(filePath);
-            if (!string.IsNullOrEmpty(directoryName) && !Directory.Exists(directoryName))
+            // Check if the path might be a directory path itself
+            // Heuristic: no extension or ends with a separator. This isn't foolproof.
+            // Or, if it already exists as a directory.
+            if (Directory.Exists(path)) return; // Already exists as a directory
+
+            if (!Path.HasExtension(path) ||
+                path.EndsWith(Path.DirectorySeparatorChar.ToString()) ||
+                path.EndsWith(Path.AltDirectorySeparatorChar.ToString()))
             {
-                Directory.CreateDirectory(directoryName);
+                directoryToEnsure = path;
+            }
+            else
+            {
+                // Assume it's a file path, get its directory
+                directoryToEnsure = Path.GetDirectoryName(path);
+            }
+
+            if (!string.IsNullOrWhiteSpace(directoryToEnsure) && !Directory.Exists(directoryToEnsure))
+            {
+                Directory.CreateDirectory(directoryToEnsure);
             }
         }
 
-
+        /// <inheritdoc/>
         public string? GetDirectoryName(string? path)
         {
             return Path.GetDirectoryName(path);

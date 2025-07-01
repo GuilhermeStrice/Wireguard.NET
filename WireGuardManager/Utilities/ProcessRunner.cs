@@ -8,15 +8,25 @@ using WireGuardManager.Exceptions;
 
 namespace WireGuardManager.Utilities
 {
-    public class ProcessRunner : IProcessRunner // Made non-static, implements IProcessRunner
+    /// <summary>
+    /// Provides functionality to run external processes and capture their output.
+    /// Implements <see cref="IProcessRunner"/> for testability.
+    /// </summary>
+    public class ProcessRunner : IProcessRunner
     {
-        // Default timeouts for external processes
+        /// <summary>
+        /// Default timeout for short-running external commands (e.g., 'wg show', 'wg genkey').
+        /// </summary>
         public static readonly TimeSpan DefaultShortOperationTimeout = TimeSpan.FromSeconds(15);
+
+        /// <summary>
+        /// Default timeout for potentially longer-running external commands (e.g., 'wg-quick up/down', 'systemctl enable').
+        /// </summary>
         public static readonly TimeSpan DefaultLongOperationTimeout = TimeSpan.FromSeconds(60);
 
-        // ProcessResult class was moved to ProcessExecutionResult.cs as a top-level class
 
-        public async Task<ProcessExecutionResult> RunAsync(string fileName, string arguments, string? workingDirectory = null, TimeSpan? timeout = null) // Instance method, returns ProcessExecutionResult
+        /// <inheritdoc/>
+        public async Task<ProcessExecutionResult> RunAsync(string fileName, string arguments, string? workingDirectory = null, TimeSpan? timeout = null)
         {
             using (var process = new Process())
             {

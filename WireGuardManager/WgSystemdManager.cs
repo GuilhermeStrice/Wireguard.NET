@@ -6,6 +6,10 @@ using WireGuardManager.Exceptions;
 
 namespace WireGuardManager
 {
+    /// <summary>
+    /// Provides functionality for managing WireGuard systemd services (e.g., wg-quick@.service).
+    /// Allows ensuring service files exist and are enabled.
+    /// </summary>
     public static class WgSystemdManager
     {
         /// <summary>

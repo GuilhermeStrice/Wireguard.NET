@@ -6,6 +6,10 @@ using WireGuardManager.Utilities; // For ValidationUtils and WgManagerConfig
 
 namespace WireGuardManager
 {
+    /// <summary>
+    /// Provides functionality for managing WireGuard .conf files, specifically for deploying them
+    /// to the system's WireGuard configuration directory (e.g., /etc/wireguard).
+    /// </summary>
     public static class WgConfigFileManager
     {
         public static IFileSystem FileSystemProvider { get; set; } = new StandardFileSystem();

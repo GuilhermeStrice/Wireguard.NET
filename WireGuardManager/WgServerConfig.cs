@@ -7,6 +7,9 @@ using WireGuardManager.Utilities;
 
 namespace WireGuardManager
 {
+    /// <summary>
+    /// Represents the [Interface] section of a WireGuard configuration file.
+    /// </summary>
     public class WgServerConfig
     {
         private string _privateKey;

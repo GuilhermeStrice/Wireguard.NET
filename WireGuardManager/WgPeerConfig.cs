@@ -7,6 +7,9 @@ using WireGuardManager.Utilities;
 
 namespace WireGuardManager
 {
+    /// <summary>
+    /// Represents a [Peer] section in a WireGuard configuration file.
+    /// </summary>
     public class WgPeerConfig
     {
         private string _publicKey;

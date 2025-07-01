@@ -6,6 +6,10 @@ using WireGuardManager.Exceptions;
 
 namespace WireGuardManager
 {
+    /// <summary>
+    /// Provides methods for interacting with the 'wg-quick' and 'wg' command-line tools
+    /// to manage WireGuard interfaces, configurations, and systemd services.
+    /// </summary>
     public static class WgQuick
     {
         /// <summary>

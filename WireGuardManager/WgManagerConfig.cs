@@ -6,6 +6,10 @@ using WireGuardManager.Utilities; // For IFileSystem
 
 namespace WireGuardManager
 {
+    /// <summary>
+    /// Represents the library's operational configuration, loaded from 'config.json'.
+    /// Controls features like systemd management and custom tool paths.
+    /// </summary>
     public class WgManagerConfig
     {
         /// <summary>
