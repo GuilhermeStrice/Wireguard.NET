@@ -117,6 +117,115 @@ namespace WireGuardManager.Tests
 
             Assert.That(config.AllowSystemdManagement, Is.False);
             Assert.That(config.SystemdServicePath, Is.EqualTo("/etc/systemd/system"));
+            Assert.That(WgLogging.MinimumLogLevel, Is.EqualTo(LogLevel.Info), "Global log level should remain default if config is missing.");
+        }
+
+        [TestCase("Debug", LogLevel.Debug)]
+        [TestCase("warning", LogLevel.Warning)] // Case-insensitivity test
+        [TestCase("ERROR", LogLevel.Error)]
+        [TestCase("None", LogLevel.None)]
+        [TestCase("Trace", LogLevel.Trace)]
+        public async Task LoadAsync_ValidMinimumLogLevelInConfig_SetsGlobalLogLevel(string logLevelString, LogLevel expectedLevel)
+        {
+            var originalGlobalLogLevel = WgLogging.MinimumLogLevel; // Save to restore
+            var mockFileSystem = new Mock<IFileSystem>();
+            var tempConfigPath = Path.Combine(TestContext.CurrentContext.TestDirectory, "test_loglevel_config.json");
+
+            var configContent = $"{{\"minimumLogLevel\": \"{logLevelString}\"}}";
+            mockFileSystem.Setup(fs => fs.FileExists(tempConfigPath)).Returns(true);
+            mockFileSystem.Setup(fs => fs.ReadAllTextAsync(tempConfigPath)).ReturnsAsync(configContent);
+            WgManagerConfig.FileSystemProvider = mockFileSystem.Object;
+
+            await WgManagerConfig.LoadAsync(tempConfigPath);
+
+            Assert.That(WgLogging.MinimumLogLevel, Is.EqualTo(expectedLevel));
+
+            // Cleanup
+            WgManagerConfig.FileSystemProvider = new StandardFileSystem(); // Reset provider
+            WgLogging.MinimumLogLevel = originalGlobalLogLevel; // Reset global log level
+        }
+
+        [Test]
+        public async Task LoadAsync_InvalidMinimumLogLevelInConfig_LogsWarningAndRetainsGlobalLogLevel()
+        {
+            var originalGlobalLogLevel = WgLogging.MinimumLogLevel;
+            LogLevel initialLogLevelForTest = LogLevel.Debug; // Set a non-default to ensure it's not changed back to default
+            WgLogging.MinimumLogLevel = initialLogLevelForTest;
+
+            var mockFileSystem = new Mock<IFileSystem>();
+            var tempConfigPath = Path.Combine(TestContext.CurrentContext.TestDirectory, "test_invalid_loglevel_config.json");
+            var configContent = "{\"minimumLogLevel\": \"InvalidValue\"}";
+
+            mockFileSystem.Setup(fs => fs.FileExists(tempConfigPath)).Returns(true);
+            mockFileSystem.Setup(fs => fs.ReadAllTextAsync(tempConfigPath)).ReturnsAsync(configContent);
+            WgManagerConfig.FileSystemProvider = mockFileSystem.Object;
+
+            // Capture log output
+            var mockLogger = new Mock<IWgLoggingProvider>();
+            var originalLogger = WgLogging.Logger;
+            WgLogging.Logger = mockLogger.Object;
+
+            await WgManagerConfig.LoadAsync(tempConfigPath);
+
+            Assert.That(WgLogging.MinimumLogLevel, Is.EqualTo(initialLogLevelForTest), "Global log level should not change on invalid config value.");
+            mockLogger.Verify(log => log.LogWarning(It.Is<string>(s => s.Contains("Invalid MinimumLogLevel value 'InvalidValue'"))), Times.Once);
+
+            // Cleanup
+            WgManagerConfig.FileSystemProvider = new StandardFileSystem();
+            WgLogging.MinimumLogLevel = originalGlobalLogLevel;
+            WgLogging.Logger = originalLogger;
+        }
+
+        [Test]
+        public async Task LoadAsync_MissingMinimumLogLevelInConfig_RetainsGlobalLogLevel()
+        {
+            var originalGlobalLogLevel = WgLogging.MinimumLogLevel;
+            LogLevel initialLogLevelForTest = LogLevel.Warning;
+            WgLogging.MinimumLogLevel = initialLogLevelForTest;
+
+            var mockFileSystem = new Mock<IFileSystem>();
+            var tempConfigPath = Path.Combine(TestContext.CurrentContext.TestDirectory, "test_missing_loglevel_config.json");
+            var configContent = "{\"allowSystemdManagement\": true}"; // No minimumLogLevel field
+
+            mockFileSystem.Setup(fs => fs.FileExists(tempConfigPath)).Returns(true);
+            mockFileSystem.Setup(fs => fs.ReadAllTextAsync(tempConfigPath)).ReturnsAsync(configContent);
+            WgManagerConfig.FileSystemProvider = mockFileSystem.Object;
+
+            var mockLogger = new Mock<IWgLoggingProvider>();
+            var originalLogger = WgLogging.Logger;
+            WgLogging.Logger = mockLogger.Object;
+
+            await WgManagerConfig.LoadAsync(tempConfigPath);
+
+            Assert.That(WgLogging.MinimumLogLevel, Is.EqualTo(initialLogLevelForTest), "Global log level should not change if field is missing.");
+            mockLogger.Verify(log => log.LogWarning(It.IsAny<string>()), Times.Never); // No warning should be logged for missing field
+
+            // Cleanup
+            WgManagerConfig.FileSystemProvider = new StandardFileSystem();
+            WgLogging.MinimumLogLevel = originalGlobalLogLevel;
+            WgLogging.Logger = originalLogger;
+        }
+
+        [TestCase(true)]
+        [TestCase(false)]
+        public async Task LoadAsync_EnableConsoleColorsInConfig_SetsStaticPropertyOnConsoleLoggingProvider(bool enableColors)
+        {
+            var originalColorSetting = ConsoleLoggingProvider.UseConsoleColors; // Save to restore
+            var mockFileSystem = new Mock<IFileSystem>();
+            var tempConfigPath = Path.Combine(TestContext.CurrentContext.TestDirectory, "test_colors_config.json");
+
+            var configContent = $"{{\"enableConsoleColors\": {enableColors.ToString().ToLower()}}}";
+            mockFileSystem.Setup(fs => fs.FileExists(tempConfigPath)).Returns(true);
+            mockFileSystem.Setup(fs => fs.ReadAllTextAsync(tempConfigPath)).ReturnsAsync(configContent);
+            WgManagerConfig.FileSystemProvider = mockFileSystem.Object;
+
+            await WgManagerConfig.LoadAsync(tempConfigPath);
+
+            Assert.That(ConsoleLoggingProvider.UseConsoleColors, Is.EqualTo(enableColors));
+
+            // Cleanup
+            WgManagerConfig.FileSystemProvider = new StandardFileSystem();
+            ConsoleLoggingProvider.UseConsoleColors = originalColorSetting; // Reset global color setting
         }
     }
 }

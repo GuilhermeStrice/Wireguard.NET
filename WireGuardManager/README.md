@@ -190,6 +190,25 @@ if (!string.IsNullOrWhiteSpace(libConfig.MinimumLogLevel) &&
 {
     WgLogging.MinimumLogLevel = configuredLevel;
 }
+
+// Example: Configure console color output (optional, defaults to true)
+// This assumes ConsoleLoggingProvider.UseConsoleColors is settable,
+// and WgManagerConfig.LoadAsync sets it from enableConsoleColors in config.json
+// ConsoleLoggingProvider.UseConsoleColors = libConfig.EnableConsoleColors;
+```
+
+The `config.json` file can control these:
+```json
+{
+  "allowSystemdManagement": false,
+  "systemdServicePath": "/etc/systemd/system",
+  "wgPath": null,
+  "wgQuickPath": null,
+  "systemctlPath": null,
+  "wireguardConfigDirectory": "/etc/wireguard",
+  "minimumLogLevel": "Info",
+  "enableConsoleColors": true
+}
 ```
 
 **Replacing the Logger:**

@@ -24,7 +24,8 @@ namespace WireGuardManager
         public string? WgQuickPath { get; set; } = null;
         public string? SystemctlPath { get; set; } = null;
         public string WireguardConfigDirectory { get; set; } = "/etc/wireguard";
-        public string? MinimumLogLevel { get; set; } = "Info"; // Default to "Info" string
+        public string? MinimumLogLevel { get; set; } = "Info";
+        public bool EnableConsoleColors { get; set; } = true; // Default to true
 
         private static string GetDefaultConfigPath()
         {
@@ -55,16 +56,38 @@ namespace WireGuardManager
                     PropertyNameCaseInsensitive = true
                 });
 
-                return config ?? new WgManagerConfig(); // Return default if deserialization results in null
+                var loadedConfig = config ?? new WgManagerConfig();
+
+                // Set global log level from config
+                if (!string.IsNullOrWhiteSpace(loadedConfig.MinimumLogLevel))
+                {
+                    if (Enum.TryParse<LogLevel>(loadedConfig.MinimumLogLevel, true, out LogLevel parsedLevel))
+                    {
+                        WgLogging.MinimumLogLevel = parsedLevel;
+                        // WgLogging.Logger.LogDebug($"Global MinimumLogLevel set to '{parsedLevel}' from config file."); // Might log before level is set effectively
+                    }
+                    else
+                    {
+                        WgLogging.Logger.LogWarning($"Invalid MinimumLogLevel value '{loadedConfig.MinimumLogLevel}' in configuration file '{actualPath}'. Using current default: {WgLogging.MinimumLogLevel}.");
+                    }
+                }
+                // If MinimumLogLevel is null/whitespace in config, WgLogging.MinimumLogLevel retains its static default or previously set value.
+
+                // Set console color preference from config
+                ConsoleLoggingProvider.UseConsoleColors = loadedConfig.EnableConsoleColors;
+
+                return loadedConfig;
             }
             catch (JsonException ex)
             {
-                Console.WriteLine($"Error parsing configuration file '{actualPath}': {ex.Message}. Using default settings.");
-                return new WgManagerConfig();
+                // Use the logger here, but be mindful that its own level might not be configured yet if this is the first load.
+                // Default logger (Console) with default level (Info) should catch this Warning.
+                WgLogging.Logger.LogWarning($"Error parsing configuration file '{actualPath}': {ex.Message}. Using default WgManagerConfig settings.");
+                return new WgManagerConfig(); // Return default WgManagerConfig
             }
-            catch (Exception ex) // Catch other potential errors like permission issues
+            catch (Exception ex)
             {
-                Console.WriteLine($"Error loading configuration file '{actualPath}': {ex.Message}. Using default settings.");
+                WgLogging.Logger.LogError($"Error loading configuration file '{actualPath}': {ex.Message}. Using default WgManagerConfig settings.", ex);
                 return new WgManagerConfig();
             }
         }

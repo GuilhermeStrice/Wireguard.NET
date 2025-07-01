@@ -5,9 +5,17 @@ namespace WireGuardManager.Utilities
     /// <summary>
     /// Default implementation of <see cref="IWgLoggingProvider"/> that writes log messages to the console.
     /// Errors are written to Console.Error, other levels to Console.Out.
+    /// Console colors can be disabled via the static <see cref="UseConsoleColors"/> property.
     /// </summary>
     public class ConsoleLoggingProvider : IWgLoggingProvider
     {
+        /// <summary>
+        /// Gets or sets a value indicating whether to use colors when logging to the console.
+        /// Defaults to true. This can be updated by <see cref="WgManagerConfig.LoadAsync"/>
+        /// based on the 'enableConsoleColors' setting in config.json.
+        /// </summary>
+        public static bool UseConsoleColors { get; set; } = true;
+
         private static string FormatMessage(string level, string message, Exception? ex = null)
         {
             string logMessage = $"{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}";
@@ -22,27 +30,26 @@ namespace WireGuardManager.Utilities
         public void LogTrace(string message)
         {
             if (WgLogging.MinimumLogLevel > LogLevel.Trace) return;
-            // Console.ForegroundColor = ConsoleColor.DarkGray; // Optional styling
+            if (UseConsoleColors) Console.ForegroundColor = ConsoleColor.DarkGray;
             Console.WriteLine(FormatMessage("TRACE", message));
-            // Console.ResetColor();
+            if (UseConsoleColors) Console.ResetColor();
         }
 
         /// <inheritdoc/>
         public void LogDebug(string message)
         {
             if (WgLogging.MinimumLogLevel > LogLevel.Debug) return;
-            // Console.ForegroundColor = ConsoleColor.Gray;
+            if (UseConsoleColors) Console.ForegroundColor = ConsoleColor.Gray;
             Console.WriteLine(FormatMessage("DEBUG", message));
-            // Console.ResetColor();
+            if (UseConsoleColors) Console.ResetColor();
         }
 
         /// <inheritdoc/>
         public void LogInfo(string message)
         {
             if (WgLogging.MinimumLogLevel > LogLevel.Info) return;
-            // Console.ForegroundColor = ConsoleColor.White;
+            // No specific color for Info, or use White if desired
             Console.WriteLine(FormatMessage("INFO", message));
-            // Console.ResetColor();
         }
 
         /// <inheritdoc/>
@@ -50,9 +57,9 @@ namespace WireGuardManager.Utilities
         {
             if (WgLogging.MinimumLogLevel > LogLevel.Warning) return;
             ConsoleColor originalColor = Console.ForegroundColor;
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.Error.WriteLine(FormatMessage("WARN", message)); // Warnings often go to Stderr
-            Console.ForegroundColor = originalColor;
+            if (UseConsoleColors) Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Error.WriteLine(FormatMessage("WARN", message));
+            if (UseConsoleColors) Console.ForegroundColor = originalColor; // Reset to original, not necessarily Console.ResetColor()
         }
 
         /// <inheritdoc/>
@@ -60,9 +67,9 @@ namespace WireGuardManager.Utilities
         {
             if (WgLogging.MinimumLogLevel > LogLevel.Error) return;
             ConsoleColor originalColor = Console.ForegroundColor;
-            Console.ForegroundColor = ConsoleColor.Red;
+            if (UseConsoleColors) Console.ForegroundColor = ConsoleColor.Red;
             Console.Error.WriteLine(FormatMessage("ERROR", message, ex));
-            Console.ForegroundColor = originalColor;
+            if (UseConsoleColors) Console.ForegroundColor = originalColor;
         }
     }
 }

@@ -5,5 +5,6 @@
   "wgQuickPath": null,
   "systemctlPath": null,
   "wireguardConfigDirectory": "/etc/wireguard",
-  "minimumLogLevel": "Info"
+  "minimumLogLevel": "Info",
+  "enableConsoleColors": true
 }
