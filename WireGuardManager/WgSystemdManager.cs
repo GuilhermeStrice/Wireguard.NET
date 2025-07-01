@@ -13,24 +13,24 @@ namespace WireGuardManager
         /// This can be replaced with a mock for testing.
         /// </summary>
         public static IProcessRunner ProcessRunnerInstance { get; set; } = new ProcessRunner();
+        public static IFileSystem FileSystemProvider { get; set; } = new StandardFileSystem();
 
-        private static string GetSystemctlPath(WgManagerConfig? config = null)
+
+        private static async Task<string> GetSystemctlPathAsync(WgManagerConfig? config = null) // Made async
         {
-            config ??= WgManagerConfig.Load();
+            config ??= await WgManagerConfig.LoadAsync(); // Use await and LoadAsync
             return string.IsNullOrWhiteSpace(config.SystemctlPath) ? "systemctl" : config.SystemctlPath;
         }
 
-        // Keep GetWgQuickPath internal to WgSystemdManager if it's only used for service file content generation
-        // Or make it accept WgManagerConfig if wg-quick path should also be configurable for service file
-        private static string GetWgQuickPath(WgManagerConfig? config = null)
+        private static async Task<string> GetWgQuickPathAsync(WgManagerConfig? config = null) // Made async
         {
-            config ??= WgManagerConfig.Load();
+            config ??= await WgManagerConfig.LoadAsync(); // Use await and LoadAsync
             return string.IsNullOrWhiteSpace(config.WgQuickPath) ? "wg-quick" : config.WgQuickPath;
         }
 
-        private static string GetServiceFileContent(string interfaceName, WgManagerConfig? config = null)
+        private static async Task<string> GetServiceFileContentAsync(string interfaceName, WgManagerConfig? config = null) // Made async
         {
-            string wgQuickPath = GetWgQuickPath(config);
+            string wgQuickPath = await GetWgQuickPathAsync(config); // Use await
             return $@"# This service is managed by WireGuardManager
 [Unit]
 Description=WireGuard via wg-quick for %I
@@ -51,7 +51,7 @@ WantedBy=multi-user.target
 
         private static async Task RunSystemctlCommandAsync(string arguments, string operationDescription, WgManagerConfig? managerConfig = null, TimeSpan? timeout = null)
         {
-            string systemctlPath = GetSystemctlPath(managerConfig);
+            string systemctlPath = await GetSystemctlPathAsync(managerConfig); // Use await
             var result = await ProcessRunnerInstance.RunAsync(systemctlPath, arguments, timeout: timeout ?? Utilities.ProcessRunner.DefaultLongOperationTimeout);
             if (!result.Success)
             {
@@ -90,15 +90,15 @@ WantedBy=multi-user.target
 
             Console.WriteLine($"Ensuring systemd service for {interfaceName} at {fullServicePath} (AllowSystemdManagement=true)");
 
-            bool serviceFileExisted = File.Exists(fullServicePath);
+            bool serviceFileExisted = FileSystemProvider.FileExists(fullServicePath); // Use IFileSystem
 
             if (!serviceFileExisted)
             {
                 Console.WriteLine($"Service file {fullServicePath} does not exist. Attempting to create...");
                 try
                 {
-                    string serviceContent = GetServiceFileContent(interfaceName, config); // Pass config for GetWgQuickPath
-                    await File.WriteAllTextAsync(fullServicePath, serviceContent);
+                    string serviceContent = await GetServiceFileContentAsync(interfaceName, config); // Use await
+                    await FileSystemProvider.WriteAllTextAsync(fullServicePath, serviceContent); // Use IFileSystem
                     Console.WriteLine($"Successfully wrote service file {fullServicePath}.");
                 }
                 catch (UnauthorizedAccessException ex)
@@ -122,8 +122,8 @@ WantedBy=multi-user.target
             }
 
             Console.WriteLine($"Checking if service {serviceFileName} is enabled...");
-            // Use GetSystemctlPath with config for this direct ProcessRunner call
-            var isEnabledResult = await ProcessRunnerInstance.RunAsync(GetSystemctlPath(config), $"is-enabled {serviceFileName}", timeout: operationTimeout ?? Utilities.ProcessRunner.DefaultShortOperationTimeout);
+            string systemctlPath = await GetSystemctlPathAsync(config); // Use await
+            var isEnabledResult = await ProcessRunnerInstance.RunAsync(systemctlPath, $"is-enabled {serviceFileName}", timeout: operationTimeout ?? Utilities.ProcessRunner.DefaultShortOperationTimeout);
 
             bool needsEnable = true;
             if (isEnabledResult.ExitCode == 0)

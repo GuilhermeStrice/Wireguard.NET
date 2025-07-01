@@ -27,16 +27,16 @@ namespace WireGuardManager
             }
         }
 
-        private static string GetWgPath(WgManagerConfig? config = null)
+        private static async Task<string> GetWgPathAsync(WgManagerConfig? config = null) // Made async
         {
             // Load config if not provided to check for custom path
-            config ??= WgManagerConfig.Load();
+            config ??= await WgManagerConfig.LoadAsync(); // Use await and LoadAsync
             return string.IsNullOrWhiteSpace(config.WgPath) ? "wg" : config.WgPath;
         }
 
         public static async Task<KeyPair> GenerateKeyPairAsync(WgManagerConfig? config = null)
         {
-            string wgPath = GetWgPath(config);
+            string wgPath = await GetWgPathAsync(config); // Use await
             string? privateKey = null;
             string? publicKey = null;
             string? tempPrivateKeyFile = null;
@@ -54,8 +54,8 @@ namespace WireGuardManager
 
                 // 2. Generate Public Key from Private Key
                 // Using a temporary file is more robust for ProcessRunner without direct stdin piping.
-                tempPrivateKeyFile = Path.GetTempFileName();
-                await File.WriteAllTextAsync(tempPrivateKeyFile, privateKey);
+                tempPrivateKeyFile = FileSystemProvider.GetTempFileName(); // Use IFileSystem
+                await FileSystemProvider.WriteAllTextAsync(tempPrivateKeyFile, privateKey); // Use IFileSystem
 
                 // The command `wg pubkey < privatekeyfile` requires shell redirection.
                 // We'll invoke it via shell to ensure redirection works.
@@ -95,16 +95,16 @@ namespace WireGuardManager
             }
             finally
             {
-                if (tempPrivateKeyFile != null && File.Exists(tempPrivateKeyFile))
+                if (tempPrivateKeyFile != null && FileSystemProvider.FileExists(tempPrivateKeyFile)) // Use IFileSystem
                 {
-                    try { File.Delete(tempPrivateKeyFile); } catch { /* best effort */ }
+                    try { FileSystemProvider.DeleteFile(tempPrivateKeyFile); } catch { /* best effort */ } // Use IFileSystem
                 }
             }
         }
 
         public static async Task<string> GeneratePresharedKeyAsync(WgManagerConfig? config = null)
         {
-            string wgPath = GetWgPath(config);
+            string wgPath = await GetWgPathAsync(config);
             var result = await ProcessRunnerInstance.RunAsync(wgPath, "genpsk", timeout: Utilities.ProcessRunner.DefaultShortOperationTimeout);
             if (!result.Success || string.IsNullOrWhiteSpace(result.StandardOutput))
             {

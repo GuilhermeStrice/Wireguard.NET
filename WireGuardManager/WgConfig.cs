@@ -10,6 +10,8 @@ namespace WireGuardManager
 {
     public class WgConfig
     {
+        public static IFileSystem FileSystemProvider { get; set; } = new StandardFileSystem();
+
         public WgServerConfig Interface { get; set; }
         public List<WgPeerConfig> Peers { get; set; } = new List<WgPeerConfig>();
 
@@ -70,7 +72,17 @@ namespace WireGuardManager
                 throw new InvalidInputException("File path cannot be null or empty for ToFile.", nameof(filePath));
             try
             {
-                File.WriteAllText(filePath, ToString());
+                // Make ToFile async to use WriteAllTextAsync consistently
+                // However, the method signature is currently sync.
+                // For now, let's keep it sync and assume a sync WriteAllText will be added to IFileSystem
+                // or this method will be made async later.
+                // To keep this diff minimal, I'll use the FileSystemProvider with WriteAllTextAsync and block.
+                // This is not ideal and should be revisited if performance becomes an issue or for pure async.
+                // Ideal: public async Task ToFileAsync(string filePath)
+                // await FileSystemProvider.WriteAllTextAsync(filePath, ToString());
+
+                // Current approach: block on async call for sync signature
+                FileSystemProvider.WriteAllTextAsync(filePath, ToString()).GetAwaiter().GetResult();
             }
             catch (UnauthorizedAccessException ex)
             {
@@ -289,12 +301,14 @@ namespace WireGuardManager
         {
             if (string.IsNullOrWhiteSpace(filePath))
                 throw new InvalidInputException("File path cannot be null or empty for FromFile.", nameof(filePath));
-            if (!File.Exists(filePath))
+            if (!FileSystemProvider.FileExists(filePath)) // Use IFileSystem
                 throw new FileNotFoundException($"Configuration file not found at '{filePath}'.", filePath);
 
             try
             {
-                var configString = File.ReadAllText(filePath);
+                // Similar to ToFile, FromFile is sync but uses ReadAllTextAsync.
+                // Blocking for now. Ideal: public static async Task<WgConfig> FromFileAsync(string filePath)
+                var configString = FileSystemProvider.ReadAllTextAsync(filePath).GetAwaiter().GetResult();
                 return Parse(configString);
             }
             catch (FileNotFoundException) { throw; }
