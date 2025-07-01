@@ -4,5 +4,6 @@
   "wgPath": null,
   "wgQuickPath": null,
   "systemctlPath": null,
-  "wireguardConfigDirectory": "/etc/wireguard"
+  "wireguardConfigDirectory": "/etc/wireguard",
+  "minimumLogLevel": "Info"
 }

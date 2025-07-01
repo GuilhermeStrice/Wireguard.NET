@@ -165,6 +165,64 @@ Methods interacting with external processes will throw exceptions for critical e
 *   **`.conf` File Placement:** When using `wg-quick up <interfaceName>`, the library manages the systemd service, but the user is responsible for placing the actual WireGuard `.conf` file (e.g., `wg0.conf`) in the location expected by `wg-quick` (usually `/etc/wireguard/`).
 *   **Pure C# Key Generation:** Key generation currently shells out to `wg`.
 
+## Logging
+
+The `WireGuardManager` library uses a simple logging abstraction to output informational messages, warnings, and errors. By default, it logs to the console. You can customize this behavior by providing your own implementation of `WireGuardManager.Utilities.IWgLoggingProvider`.
+
+**Controlling Log Level:**
+
+The minimum log level can be controlled statically via `WireGuardManager.WgLogging.MinimumLogLevel`. The default is `LogLevel.Info`.
+```csharp
+using WireGuardManager;
+using WireGuardManager.Utilities; // For LogLevel enum
+
+// Set minimum log level (e.g., in your application startup)
+WgLogging.MinimumLogLevel = LogLevel.Debug; // Show Debug, Info, Warning, Error
+// or
+// WgLogging.MinimumLogLevel = LogLevel.None; // Disable all library logging
+```
+The `WgManagerConfig` class also loads a `MinimumLogLevel` string from `config.json`. Your application can parse this string and set `WgLogging.MinimumLogLevel` accordingly:
+```csharp
+// Example: In your application startup after loading WgManagerConfig
+var libConfig = await WgManagerConfig.LoadAsync("path/to/your/config.json"); // Or default path
+if (!string.IsNullOrWhiteSpace(libConfig.MinimumLogLevel) &&
+    Enum.TryParse<LogLevel>(libConfig.MinimumLogLevel, true, out LogLevel configuredLevel))
+{
+    WgLogging.MinimumLogLevel = configuredLevel;
+}
+```
+
+**Replacing the Logger:**
+
+To integrate with your application's logging framework (e.g., `Microsoft.Extensions.Logging`, Serilog), create a class that implements `IWgLoggingProvider` and then assign an instance of it to `WgLogging.Logger`.
+
+**Example: Adapter for `Microsoft.Extensions.Logging.ILogger`**
+```csharp
+using Microsoft.Extensions.Logging; // NuGet: Microsoft.Extensions.Logging.Abstractions
+using WireGuardManager.Utilities;
+using System;
+
+public class MelLoggingProvider : IWgLoggingProvider
+{
+    private readonly ILogger _logger;
+
+    public MelLoggingProvider(ILogger logger)
+    {
+        _logger = logger;
+    }
+
+    public void LogTrace(string message) => _logger.LogTrace(message);
+    public void LogDebug(string message) => _logger.LogDebug(message);
+    public void LogInfo(string message) => _logger.LogInformation(message);
+    public void LogWarning(string message) => _logger.LogWarning(message);
+    public void LogError(string message, Exception? ex = null) => _logger.LogError(ex, message);
+}
+
+// In your application setup (e.g., after configuring ILogger):
+// ILogger myAppLogger = ... ; // Get your ILogger instance (e.g., from DI)
+// WgLogging.Logger = new MelLoggingProvider(myAppLogger);
+```
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues or pull requests.

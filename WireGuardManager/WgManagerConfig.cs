@@ -23,7 +23,8 @@ namespace WireGuardManager
         public string? WgPath { get; set; } = null;
         public string? WgQuickPath { get; set; } = null;
         public string? SystemctlPath { get; set; } = null;
-        public string WireguardConfigDirectory { get; set; } = "/etc/wireguard"; // Default path
+        public string WireguardConfigDirectory { get; set; } = "/etc/wireguard";
+        public string? MinimumLogLevel { get; set; } = "Info"; // Default to "Info" string
 
         private static string GetDefaultConfigPath()
         {

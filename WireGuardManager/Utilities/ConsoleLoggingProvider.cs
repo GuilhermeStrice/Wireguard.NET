@@ -21,6 +21,7 @@ namespace WireGuardManager.Utilities
         /// <inheritdoc/>
         public void LogTrace(string message)
         {
+            if (WgLogging.MinimumLogLevel > LogLevel.Trace) return;
             // Console.ForegroundColor = ConsoleColor.DarkGray; // Optional styling
             Console.WriteLine(FormatMessage("TRACE", message));
             // Console.ResetColor();
@@ -29,6 +30,7 @@ namespace WireGuardManager.Utilities
         /// <inheritdoc/>
         public void LogDebug(string message)
         {
+            if (WgLogging.MinimumLogLevel > LogLevel.Debug) return;
             // Console.ForegroundColor = ConsoleColor.Gray;
             Console.WriteLine(FormatMessage("DEBUG", message));
             // Console.ResetColor();
@@ -37,6 +39,7 @@ namespace WireGuardManager.Utilities
         /// <inheritdoc/>
         public void LogInfo(string message)
         {
+            if (WgLogging.MinimumLogLevel > LogLevel.Info) return;
             // Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine(FormatMessage("INFO", message));
             // Console.ResetColor();
@@ -45,6 +48,7 @@ namespace WireGuardManager.Utilities
         /// <inheritdoc/>
         public void LogWarning(string message)
         {
+            if (WgLogging.MinimumLogLevel > LogLevel.Warning) return;
             ConsoleColor originalColor = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.Error.WriteLine(FormatMessage("WARN", message)); // Warnings often go to Stderr
@@ -54,6 +58,7 @@ namespace WireGuardManager.Utilities
         /// <inheritdoc/>
         public void LogError(string message, Exception? ex = null)
         {
+            if (WgLogging.MinimumLogLevel > LogLevel.Error) return;
             ConsoleColor originalColor = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Red;
             Console.Error.WriteLine(FormatMessage("ERROR", message, ex));

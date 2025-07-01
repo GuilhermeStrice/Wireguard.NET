@@ -15,5 +15,11 @@ namespace WireGuardManager
         /// Defaults to <see cref="ConsoleLoggingProvider"/>.
         /// </summary>
         public static IWgLoggingProvider Logger { get; set; } = new ConsoleLoggingProvider();
+
+        /// <summary>
+        /// Gets or sets the minimum log level for messages to be processed by the current <see cref="Logger"/>.
+        /// Messages below this level will be ignored. Defaults to <see cref="LogLevel.Info"/>.
+        /// </summary>
+        public static LogLevel MinimumLogLevel { get; set; } = LogLevel.Info;
     }
 }
