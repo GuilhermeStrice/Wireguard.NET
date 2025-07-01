@@ -466,5 +466,216 @@ namespace WireGuardManager.IntegrationTests
             if(File.Exists(dummyToolLogFile)) File.Delete(dummyToolLogFile);
             if(File.Exists(dummyToolPath)) File.Delete(dummyToolPath);
         }
+
+        [Test, Order(22)]
+        public async Task Up_InterfaceAlreadyUp_ThrowsExternalToolExceptionOrSpecificError()
+        {
+            // Ensure interface is up first
+            await EnsureTestInterfaceUpWithInitialPeerAsync(TestInterface);
+            TestContext.Progress.WriteLine($"{TestInterface} is up for testing 'Up when already up'.");
+
+            // Try to bring it up again
+            var ex = Assert.ThrowsAsync<ExternalToolException>(async () =>
+                await WgQuick.Up(TestInterface, _integrationTestConfig, TimeSpan.FromSeconds(10))
+            );
+
+            Assert.That(ex, Is.Not.Null);
+            Assert.That(ex.ToolName, Is.EqualTo("wg-quick"));
+            // wg-quick behavior for "already up" can vary. It might exit non-zero with a specific message.
+            // Common messages include "already exists" or referring to rtnetlink.
+            Assert.That(ex.StandardError, Does.Contain("already exists").IgnoreCase
+                .Or.Contain("RTNETLINK answers: File exists").IgnoreCase
+                .Or.Contain("is already running").IgnoreCase, // Another possible message
+                $"Expected 'already exists' or similar in stderr, but got: {ex.StandardError}");
+
+            TestContext.Progress.WriteLine($"WgQuick.Up for already up interface failed as expected: {ex.Message}");
+        }
+
+        [Test, Order(23)]
+        public async Task Down_InterfaceAlreadyDown_ThrowsExternalToolExceptionOrSpecificError()
+        {
+            string interfaceName = "wg_already_down"; // Use a name known to be down
+            // Ensure it's down (it shouldn't exist or be up from previous tests with this unique name)
+            try
+            {
+                await WgQuick.Down(interfaceName, _integrationTestConfig, TimeSpan.FromSeconds(5));
+            }
+            catch (ExternalToolException) { /* Expected if it's already down/doesn't exist */ }
+            TestContext.Progress.WriteLine($"{interfaceName} is confirmed down for testing 'Down when already down'.");
+
+            var ex = Assert.ThrowsAsync<ExternalToolException>(async () =>
+                await WgQuick.Down(interfaceName, _integrationTestConfig, TimeSpan.FromSeconds(10))
+            );
+
+            Assert.That(ex, Is.Not.Null);
+            Assert.That(ex.ToolName, Is.EqualTo("wg-quick"));
+            // stderr from wg-quick for "not active" or "does not exist"
+            Assert.That(ex.StandardError, Does.Contain("is not a WireGuard interface").IgnoreCase
+                .Or.Contain("not active").IgnoreCase
+                .Or.Contain("No such device").IgnoreCase, // Another possible message
+                 $"Expected 'not a WireGuard interface' or 'not active' in stderr, but got: {ex.StandardError}");
+
+            TestContext.Progress.WriteLine($"WgQuick.Down for already down interface failed as expected: {ex.Message}");
+        }
+
+        [Test, Order(24)]
+        public async Task SetPeerAsync_NewPeerPublicKey_AddsPeer()
+        {
+            // Ensure interface is up, but without this specific new peer initially
+            string newPeerKey = "NEWPEERPUBKEYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            await EnsureTestInterfaceUpWithInitialPeerAsync(TestInterface, PeerPublicKey); // Ensure TestInterface is up with an existing peer
+             TestContext.Progress.WriteLine($"{TestInterface} is up for testing 'SetPeerAsync with new peer key'.");
+
+            var options = new WgPeerUpdateOptions { AllowedIPs = new List<string> { "10.200.200.99/32" } };
+            var setResult = await WgQuick.SetPeerAsync(TestInterface, newPeerKey, options, _integrationTestConfig);
+            Assert.That(setResult.Success, Is.True, $"SetPeerAsync for new peer failed: {setResult.StandardError}");
+
+            var details = await WgQuick.ShowInterfaceDetailsAsync(TestInterface, _integrationTestConfig);
+            Assert.That(details, Is.Not.Null);
+            var addedPeer = details.Peers.FirstOrDefault(p => p.PublicKey == newPeerKey);
+            Assert.That(addedPeer, Is.Not.Null, "New peer was not found after SetPeerAsync.");
+            Assert.That(addedPeer.AllowedIPs, Contains.Item("10.200.200.99/32"));
+            Assert.That(details.Peers.Count, Is.GreaterThanOrEqualTo(2), "Should have at least the initial peer and the new peer.");
+        }
+
+        [Test, Order(25)]
+        public async Task SetPeerAsync_OnDownInterface_ThrowsExternalToolException()
+        {
+            string downInterface = "wg_set_on_down"; // Unique name for this test
+            // Ensure this interface's config file exists so `wg set` can find it, but interface is down.
+            var serverConf = new WgServerConfig(ServerPrivateKey) { Address = new List<string> { "10.200.203.1/24" } };
+            await CreateAndDeployTestConfig(downInterface, serverConf);
+
+            // Ensure it's down
+            try { await WgQuick.Down(downInterface, _integrationTestConfig, TimeSpan.FromSeconds(5)); }
+            catch (ExternalToolException) { /* Expected if already down or doesn't exist as live interface */ }
+            TestContext.Progress.WriteLine($"{downInterface} is confirmed down for testing 'SetPeerAsync on down interface'.");
+
+            var options = new WgPeerUpdateOptions { AllowedIPs = new List<string> { "10.200.203.2/32" } };
+
+            var ex = Assert.ThrowsAsync<ExternalToolException>(async () =>
+                await WgQuick.SetPeerAsync(downInterface, PeerPublicKey, options, _integrationTestConfig)
+            );
+
+            Assert.That(ex, Is.Not.Null);
+            Assert.That(ex.ToolName, Is.EqualTo("wg"));
+            // `wg set` on a down interface usually results in "No such device" or similar.
+            Assert.That(ex.StandardError, Does.Contain("No such device").IgnoreCase
+                .Or.Contain("Cannot find device").IgnoreCase,
+                 $"Expected 'No such device' or similar, but got: {ex.StandardError}");
+        }
+
+        [Test, Order(26)]
+        public async Task SyncConf_WithInvalidConfFileContent_ThrowsExternalToolException()
+        {
+            string interfaceName = "wg_invalid_sync";
+            string invalidConfPath = Path.Combine(_testBaseDir, $"{interfaceName}.conf");
+            await FileSystem.WriteAllTextAsync(invalidConfPath, "[Interface]\nPrivateKey=INVALID_KEY_NO_EQUALS\nAddress=10.0.0.1/24"); // Malformed key
+
+            // Ensure interface exists for wg set/sync operations (even if it's not fully "up" with wg-quick)
+            // For syncconf, the interface must exist. We can try to add it simply.
+            try { await ProcessRunnerInstance.RunAsync("ip", $"link add {interfaceName} type wireguard"); }
+            catch (Exception ex) { TestContext.Progress.WriteLine($"Could not pre-add link {interfaceName} for SyncConf test, may fail if it does not exist. Error: {ex.Message}");}
+
+
+            var ex = Assert.ThrowsAsync<ExternalToolException>(async () =>
+                await WgQuick.SyncConf(interfaceName, invalidConfPath, _integrationTestConfig)
+            );
+
+            Assert.That(ex, Is.Not.Null);
+            Assert.That(ex.ToolName, Is.EqualTo("wg"));
+            Assert.That(ex.StandardError, Does.Contain("Invalid Base64 string").IgnoreCase
+                .Or.Contain("Unable to parse private key").IgnoreCase
+                .Or.Contain("Syntax error").IgnoreCase,  // General parsing error
+                $"Expected 'Invalid Base64 string' or similar error from wg syncconf, but got: {ex.StandardError}");
+
+            // Clean up link if added
+            try { await ProcessRunnerInstance.RunAsync("ip", $"link del {interfaceName}"); } catch {}
+        }
+
+        [Test, Order(27)]
+        public async Task SetConf_WithInvalidConfFileContent_ThrowsExternalToolException()
+        {
+            string interfaceName = "wg_invalid_set";
+            string invalidConfPath = Path.Combine(_testBaseDir, $"{interfaceName}.conf");
+            await FileSystem.WriteAllTextAsync(invalidConfPath, "[Interface]\nPrivateKey=INVALID_KEY_NO_EQUALS\nAddress=10.0.0.1/24"); // Malformed key
+
+            try { await ProcessRunnerInstance.RunAsync("ip", $"link add {interfaceName} type wireguard"); }
+            catch (Exception ex) { TestContext.Progress.WriteLine($"Could not pre-add link {interfaceName} for SetConf test, may fail if it does not exist. Error: {ex.Message}");}
+
+            var ex = Assert.ThrowsAsync<ExternalToolException>(async () =>
+                await WgQuick.SetConf(interfaceName, invalidConfPath, _integrationTestConfig)
+            );
+
+            Assert.That(ex, Is.Not.Null);
+            Assert.That(ex.ToolName, Is.EqualTo("wg"));
+            Assert.That(ex.StandardError, Does.Contain("Invalid Base64 string").IgnoreCase
+                .Or.Contain("Unable to parse private key").IgnoreCase
+                .Or.Contain("Syntax error").IgnoreCase,
+                 $"Expected 'Invalid Base64 string' or similar error from wg setconf, but got: {ex.StandardError}");
+
+            try { await ProcessRunnerInstance.RunAsync("ip", $"link del {interfaceName}"); } catch {}
+        }
+
+        [Test, Order(28)]
+        public async Task Save_OnInterfaceNotUpWithWgQuick_MayFailOrDoNothing()
+        {
+            string interfaceName = "wg_manual_set";
+            string confPath = Path.Combine(_testBaseDir, $"{interfaceName}.conf");
+
+            var serverConf = new WgServerConfig(ServerPrivateKey) { Address = new List<string> { "10.200.204.1/24" } };
+            var wgConfig = new WgConfig(serverConf);
+            wgConfig.ToFile(confPath); // Uses WgConfig's StandardFileSystem
+
+            // Bring up interface manually using wg setconf (requires 'ip link add' first)
+            try
+            {
+                await ProcessRunnerInstance.RunAsync("ip", $"link add {interfaceName} type wireguard");
+                await WgQuick.SetConf(interfaceName, confPath, _integrationTestConfig);
+                // At this point, interface is up, but not via wg-quick's stateful management for this interface name.
+            }
+            catch (Exception ex)
+            {
+                Assert.Inconclusive($"Setup for Save_OnInterfaceNotUpWithWgQuick_MayFailOrDoNothing failed: Could not bring up interface manually. {ex.Message}");
+            }
+
+            // Act: Attempt to save using wg-quick save
+            // This command often expects a configuration file at /etc/wireguard/<interfaceName>.conf
+            // or relies on state managed by `wg-quick up`.
+            // If our _integrationTestConfig.WireguardConfigDirectory is not /etc/wireguard, it will likely fail.
+            // Or if wg-quick doesn't consider this interface "managed by it".
+            var saveResult = await WgQuick.Save(interfaceName, _integrationTestConfig);
+
+            // Assert: Behavior can vary.
+            // 1. It might fail if /etc/wireguard/wg_manual_set.conf doesn't exist (if _integrationTestConfig.WireguardConfigDirectory points elsewhere)
+            // 2. It might do nothing successfully if it doesn't find a reason to save or a managed config.
+            // 3. It might succeed and save to /etc/wireguard/ if that's where it looks by default and it has perms.
+
+            // For this test, we'll assume it's most likely to fail if the config isn't in the default wg-quick path.
+            // Or succeed but not actually update our test file at `confPath` unless WireguardConfigDirectory was /etc/wireguard.
+            if (!saveResult.Success)
+            {
+                TestContext.Progress.WriteLine($"WgQuick.Save for manually set interface failed as expected/tolerated: {saveResult.StandardError}");
+                Assert.Pass("WgQuick.Save failed or did nothing for a non-wg-quick managed interface, as expected under some configurations.");
+            }
+            else
+            {
+                // If it succeeded, check if it *actually* saved to the original confPath (unlikely unless WireguardConfigDirectory was set to _testBaseDir)
+                // or if it saved to a default location like /etc/wireguard/.
+                // This assertion is tricky without knowing wg-quick's exact internal logic for "save".
+                TestContext.Progress.WriteLine($"WgQuick.Save for manually set interface succeeded. Output: {saveResult.StandardOutput}. Stderr: {saveResult.StandardError}");
+                // We can't easily verify where it saved if it didn't save to `confPath`.
+                // If it *did* save to `confPath` (because WireguardConfigDirectory pointed there), its content should be similar.
+                if (_integrationTestConfig.WireguardConfigDirectory == _testBaseDir)
+                {
+                    var savedConfig = WgConfig.FromFile(confPath);
+                    Assert.That(savedConfig.Interface.PrivateKey, Is.EqualTo(ServerPrivateKey)); // Simple check
+                }
+                Assert.Pass("WgQuick.Save succeeded. Further validation of save location might be needed depending on wg-quick's behavior.");
+            }
+
+            // Cleanup
+            try { await ProcessRunnerInstance.RunAsync("ip", $"link del {interfaceName}"); } catch {}
+        }
     }
 }

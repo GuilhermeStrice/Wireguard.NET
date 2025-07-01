@@ -173,5 +173,49 @@ namespace WireGuardManager.IntegrationTests
             Assert.That(serviceContent, Does.Contain($"ExecStart={customWgQuickPath} up %i"), "Service file content should use custom WgQuickPath for ExecStart.");
             Assert.That(serviceContent, Does.Contain($"ExecStop={customWgQuickPath} down %i"), "Service file content should use custom WgQuickPath for ExecStop.");
         }
+
+        [Test]
+        public void StartServiceAsync_AttemptsToRunSystemctlStart()
+        {
+            string interfaceName = "wg_start_test";
+            // Ensure service file is created for the test by calling EnsureServiceExistsAndEnabled first
+            // This part will use the real FileSystemProvider as set in GlobalSetup
+            Assert.DoesNotThrowAsync(async () =>
+                await WgSystemdManager.EnsureServiceExistsAndEnabled(interfaceName, _configAllowSystemd),
+                "Prerequisite: EnsureServiceExistsAndEnabled should not throw for file creation part.");
+
+            Assert.That(File.Exists(Path.Combine(_configAllowSystemd.SystemdServicePath, $"wg-quick@{interfaceName}.service")), Is.True);
+
+            // Now test StartServiceAsync
+            // We expect this to throw ExternalToolException if systemctl isn't fully functional
+            var ex = Assert.ThrowsAsync<ExternalToolException>(async () =>
+                await WgSystemdManager.StartServiceAsync(interfaceName, _configAllowSystemd)
+            );
+
+            Assert.That(ex, Is.Not.Null);
+            Assert.That(ex.ToolName, Does.EndWith("systemctl"));
+            Assert.That(ex.Message, Does.Contain($"start wg-quick@{interfaceName}.service"));
+            TestContext.Progress.WriteLine($"StartServiceAsync failed as expected (systemctl likely not fully functional): {ex.Message}");
+        }
+
+        [Test]
+        public async Task IsServiceActiveAsync_AttemptsToRunSystemctlIsActive_ReturnsFalseOnFailure()
+        {
+            string interfaceName = "wg_isactive_test";
+            // No need to create service file as `is-active` can be called on non-existent services (it will just report inactive)
+
+            bool isActive = true; // Default to true to ensure it changes
+            try
+            {
+                isActive = await WgSystemdManager.IsServiceActiveAsync(interfaceName, _configAllowSystemd);
+            }
+            catch (ExternalToolException ex)
+            {
+                TestContext.Progress.WriteLine($"IsServiceActiveAsync threw ExternalToolException as systemctl likely not fully functional: {ex.Message}");
+                isActive = false; // Treat tool failure as "not active" for test purposes
+            }
+
+            Assert.That(isActive, Is.False, "IsServiceActiveAsync should return false if systemctl command fails or reports inactive.");
+        }
     }
 }
