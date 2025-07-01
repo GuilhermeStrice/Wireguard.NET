@@ -248,5 +248,223 @@ namespace WireGuardManager.IntegrationTests
             // Or false if systemctl calls genuinely failed and were reported.
             // For this test, primary assertion is file existence and content.
         }
+
+        [Test]
+        public void Up_InterfaceName_MissingConfFile_ThrowsExternalToolException()
+        {
+            string interfaceName = "wg_missing_conf"; // Unique name, ensure no file is deployed for it
+
+            // Ensure the config directory defined in _integrationTestConfig.WireguardConfigDirectory exists
+            // but the specific conf file does not.
+            Directory.CreateDirectory(_integrationTestConfig.WireguardConfigDirectory);
+            string expectedConfPath = Path.Combine(_integrationTestConfig.WireguardConfigDirectory, $"{interfaceName}.conf");
+            if(File.Exists(expectedConfPath)) File.Delete(expectedConfPath);
+
+            var ex = Assert.ThrowsAsync<ExternalToolException>(async () =>
+                await WgQuick.Up(interfaceName, _integrationTestConfig, TimeSpan.FromSeconds(10))
+            );
+
+            Assert.That(ex, Is.Not.Null);
+            Assert.That(ex.ToolName, Is.EqualTo("wg-quick")); // Or the configured path
+            // stderr from wg-quick might vary slightly, but usually indicates file not found or similar
+            Assert.That(ex.StandardError, Does.Contain("not found").IgnoreCase.Or.Contain("No such file").IgnoreCase);
+            TestContext.Progress.WriteLine($"WgQuick.Up for missing conf file failed as expected: {ex.Message}");
+        }
+
+        [Test]
+        public void Up_FilePath_NonExistentFile_ThrowsExternalToolException()
+        {
+            string nonExistentFilePath = Path.Combine(_testBaseDir, "non_existent_wg_config.conf");
+            if(File.Exists(nonExistentFilePath)) File.Delete(nonExistentFilePath); // Ensure it really doesn't exist
+
+            var ex = Assert.ThrowsAsync<ExternalToolException>(async () =>
+                await WgQuick.Up(nonExistentFilePath, _integrationTestConfig, TimeSpan.FromSeconds(10))
+            );
+
+            Assert.That(ex, Is.Not.Null);
+            Assert.That(ex.ToolName, Is.EqualTo("wg-quick"));
+            // wg-quick stderr for a non-existent file path
+            Assert.That(ex.StandardError, Does.Contain("No such file or directory").IgnoreCase
+                .Or.Contain("not found").IgnoreCase);
+            TestContext.Progress.WriteLine($"WgQuick.Up for non-existent file path failed as expected: {ex.Message}");
+        }
+
+        // --- SetPeerAsync Tests ---
+        private async Task EnsureTestInterfaceUpWithInitialPeerAsync(string interfaceName = TestInterface, string initialPeerKey = PeerPublicKey, string initialAllowedIP = "10.200.200.2/32")
+        {
+            var serverConf = new WgServerConfig(ServerPrivateKey) { Address = new List<string> { "10.200.200.1/24" }, ListenPort = 51830 };
+            var peerConf = new WgPeerConfig(initialPeerKey) { AllowedIPs = new List<string> { initialAllowedIP } };
+            await CreateAndDeployTestConfig(interfaceName, serverConf, new List<WgPeerConfig> { peerConf });
+
+            try { await WgQuick.Up(interfaceName, _integrationTestConfig, TimeSpan.FromSeconds(15)); }
+            catch (ExternalToolException ex) {
+                // If it's already up, wg-quick up might return non-zero with specific message
+                if (!ex.StandardError.Contains("already exists", StringComparison.OrdinalIgnoreCase)) throw;
+                TestContext.Progress.WriteLine($"Interface {interfaceName} might have been already up: {ex.StandardError}");
+            }
+            var showResult = await WgQuick.Show(interfaceName, _integrationTestConfig);
+            Assert.That(showResult.StandardOutput, Does.Contain(ServerPublicKey.Substring(0,10)), $"Interface {interfaceName} failed to come up for SetPeerAsync tests.");
+        }
+
+        [Test, Order(10)] // Order after basic Up/Down tests
+        public async Task SetPeerAsync_UpdateEndpoint_Succeeds()
+        {
+            await EnsureTestInterfaceUpWithInitialPeerAsync();
+            string newEndpoint = "123.123.123.123:12345";
+            var options = new WgPeerUpdateOptions { Endpoint = newEndpoint };
+
+            var setResult = await WgQuick.SetPeerAsync(TestInterface, PeerPublicKey, options, _integrationTestConfig);
+            Assert.That(setResult.Success, Is.True, $"SetPeerAsync (Endpoint) failed: {setResult.StandardError}");
+
+            var details = await WgQuick.ShowInterfaceDetailsAsync(TestInterface, _integrationTestConfig);
+            var peer = details?.Peers.FirstOrDefault(p => p.PublicKey == PeerPublicKey);
+            Assert.That(peer, Is.Not.Null, "Peer not found after update.");
+            Assert.That(peer?.Endpoint, Is.EqualTo(newEndpoint));
+        }
+
+        [Test, Order(11)]
+        public async Task SetPeerAsync_UpdateAllowedIPs_Succeeds()
+        {
+            await EnsureTestInterfaceUpWithInitialPeerAsync(); // Re-ensure state or use existing
+            var newAllowedIPs = new List<string> { "10.200.200.5/32", "10.200.200.6/32" };
+            var options = new WgPeerUpdateOptions { AllowedIPs = newAllowedIPs };
+
+            var setResult = await WgQuick.SetPeerAsync(TestInterface, PeerPublicKey, options, _integrationTestConfig);
+            Assert.That(setResult.Success, Is.True, $"SetPeerAsync (AllowedIPs) failed: {setResult.StandardError}");
+
+            var details = await WgQuick.ShowInterfaceDetailsAsync(TestInterface, _integrationTestConfig);
+            var peer = details?.Peers.FirstOrDefault(p => p.PublicKey == PeerPublicKey);
+            Assert.That(peer, Is.Not.Null);
+            Assert.That(peer?.AllowedIPs, Is.EquivalentTo(newAllowedIPs));
+        }
+
+        [Test, Order(12)]
+        public async Task SetPeerAsync_AddPresharedKey_Succeeds()
+        {
+            await EnsureTestInterfaceUpWithInitialPeerAsync();
+            string psk = "TESTPSKINTEGRATIONAAAAAAAAAAAAAAAAAAAAAAAAAAA="; // Valid format
+            var options = new WgPeerUpdateOptions { PresharedKey = psk };
+
+            var setResult = await WgQuick.SetPeerAsync(TestInterface, PeerPublicKey, options, _integrationTestConfig);
+            Assert.That(setResult.Success, Is.True, $"SetPeerAsync (Add PSK) failed: {setResult.StandardError}");
+
+            var details = await WgQuick.ShowInterfaceDetailsAsync(TestInterface, _integrationTestConfig);
+            var peer = details?.Peers.FirstOrDefault(p => p.PublicKey == PeerPublicKey);
+            Assert.That(peer, Is.Not.Null);
+            Assert.That(peer?.PresharedKeyExists, Is.True, "PresharedKeyExists should be true after adding PSK.");
+        }
+
+        [Test, Order(13)]
+        public async Task SetPeerAsync_RemovePresharedKey_Succeeds()
+        {
+            await EnsureTestInterfaceUpWithInitialPeerAsync();
+            // First, ensure PSK exists (from previous test or add one)
+            await WgQuick.SetPeerAsync(TestInterface, PeerPublicKey, new WgPeerUpdateOptions { PresharedKey = "TEMPPSKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }, _integrationTestConfig);
+
+            var options = new WgPeerUpdateOptions { PresharedKey = "off" };
+            var setResult = await WgQuick.SetPeerAsync(TestInterface, PeerPublicKey, options, _integrationTestConfig);
+            Assert.That(setResult.Success, Is.True, $"SetPeerAsync (Remove PSK) failed: {setResult.StandardError}");
+
+            var details = await WgQuick.ShowInterfaceDetailsAsync(TestInterface, _integrationTestConfig);
+            var peer = details?.Peers.FirstOrDefault(p => p.PublicKey == PeerPublicKey);
+            Assert.That(peer, Is.Not.Null);
+            Assert.That(peer?.PresharedKeyExists, Is.False, "PresharedKeyExists should be false after removing PSK with 'off'.");
+        }
+
+        [Test, Order(14)]
+        public async Task SetPeerAsync_UpdatePersistentKeepalive_Succeeds()
+        {
+            await EnsureTestInterfaceUpWithInitialPeerAsync();
+            int newKeepalive = 33;
+            var options = new WgPeerUpdateOptions { PersistentKeepalive = newKeepalive };
+
+            var setResult = await WgQuick.SetPeerAsync(TestInterface, PeerPublicKey, options, _integrationTestConfig);
+            Assert.That(setResult.Success, Is.True, $"SetPeerAsync (PersistentKeepalive) failed: {setResult.StandardError}");
+
+            var details = await WgQuick.ShowInterfaceDetailsAsync(TestInterface, _integrationTestConfig);
+            var peer = details?.Peers.FirstOrDefault(p => p.PublicKey == PeerPublicKey);
+            Assert.That(peer, Is.Not.Null);
+            Assert.That(peer?.PersistentKeepaliveIntervalSeconds, Is.EqualTo(newKeepalive));
+        }
+
+        // Note: The previous Order(2) and Order(3) tests for SetPeerAsync (add/remove) are good.
+        // These new tests (10-14) provide more granular checks for specific property updates.
+        // Ensure the ordering makes sense or make tests more independent if Order attribute is removed.
+        // For now, keeping Order to build on previous states where appropriate, but EnsureTestInterfaceUpWithInitialPeerAsync helps.
+
+        [Test, Order(20)] // After SetPeerAsync tests
+        public async Task Save_UpdatesConfFile_AfterLiveChanges()
+        {
+            // 1. Ensure interface is up and has a known peer state (e.g., from SetPeerAsync_UpdateAllowedIPs_Succeeds)
+            await EnsureTestInterfaceUpWithInitialPeerAsync(); // Resets to a known peer
+            var newAllowedIPs = new List<string> { "10.200.200.88/32" };
+            var options = new WgPeerUpdateOptions { AllowedIPs = newAllowedIPs };
+            await WgQuick.SetPeerAsync(TestInterface, PeerPublicKey, options, _integrationTestConfig); // Change it live
+
+            // 2. Call WgQuick.Save
+            var saveResult = await WgQuick.Save(TestInterface, _integrationTestConfig);
+            Assert.That(saveResult.Success, Is.True, $"WgQuick.Save failed: {saveResult.StandardError}");
+
+            // 3. Read the saved .conf file
+            string savedConfPath = Path.Combine(_integrationTestConfig.WireguardConfigDirectory, $"{TestInterface}.conf");
+            Assert.That(File.Exists(savedConfPath), Is.True, "Saved .conf file does not exist.");
+
+            var savedWgConfig = WgConfig.FromFile(savedConfPath); // Uses WgConfig's FileSystemProvider
+            Assert.That(savedWgConfig, Is.Not.Null);
+            var savedPeer = savedWgConfig.Peers.FirstOrDefault(p => p.PublicKey == PeerPublicKey);
+            Assert.That(savedPeer, Is.Not.Null, "Peer not found in saved .conf file.");
+            Assert.That(savedPeer.AllowedIPs, Is.EquivalentTo(newAllowedIPs), "Saved .conf file does not reflect live AllowedIPs change.");
+        }
+
+        [Test, Order(21)]
+        public async Task Up_UsesCustomWgQuickPath_FromConfig()
+        {
+            string dummyToolLogFile = Path.Combine(_testBaseDir, "dummy_wgquick_log.txt");
+            string dummyToolPath = Path.Combine(_testBaseDir, "dummy_wg-quick.sh");
+
+            // Create the dummy wg-quick script
+            // It will just log its arguments and exit successfully for this test.
+            // Ensure it's executable: this will be handled by the Docker environment if script is created there,
+            // or by host if tests run directly. For Docker, ensure base image has bash.
+            string scriptContent = $"#!/bin/bash\necho \"$0 $@\" >> \"{dummyToolLogFile}\"\nexit 0";
+            File.WriteAllText(dummyToolPath, scriptContent);
+
+            // Make it executable - this is host dependent, Docker execution will need to handle this
+            // For Linux host / Docker:
+            if (Environment.OSVersion.Platform != PlatformID.Win32NT)
+            {
+                 Process.Start("chmod", $"+x \"{dummyToolPath}\"")?.WaitForExit();
+            }
+            else
+            {
+                TestContext.Progress.WriteLine("Warning: Cannot chmod +x on Windows for dummy script. Test relies on script being executable in Docker.");
+            }
+
+
+            var customPathConfig = new WgManagerConfig
+            {
+                WireguardConfigDirectory = _wgConfDir,
+                WgQuickPath = dummyToolPath // Configure to use our dummy script
+            };
+
+            // Prepare a minimal .conf file for the dummy wg-quick to "process"
+            string interfaceName = "wg_custom_path";
+            var serverConf = new WgServerConfig(ServerPrivateKey) { Address = new List<string> { "10.200.202.1/24" }};
+            await CreateAndDeployTestConfig(interfaceName, serverConf); // Deploys to _wgConfDir
+
+            // Act: Call WgQuick.Up, which should now use the dummy wg-quick
+            var upResult = await WgQuick.Up(interfaceName, customPathConfig, TimeSpan.FromSeconds(10));
+
+            // Assert
+            Assert.That(upResult.Success, Is.True, "Dummy wg-quick script should have exited successfully.");
+            Assert.That(File.Exists(dummyToolLogFile), Is.True, "Dummy script log file should exist.");
+
+            string logContent = File.ReadAllText(dummyToolLogFile);
+            Assert.That(logContent, Does.Contain($"up \"{interfaceName}\""), "Dummy script should have been called with 'up interfaceName'.");
+
+            // Clean up dummy script log
+            if(File.Exists(dummyToolLogFile)) File.Delete(dummyToolLogFile);
+            if(File.Exists(dummyToolPath)) File.Delete(dummyToolPath);
+        }
     }
 }

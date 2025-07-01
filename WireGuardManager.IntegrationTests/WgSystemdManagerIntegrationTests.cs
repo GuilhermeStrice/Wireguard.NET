@@ -23,7 +23,9 @@ namespace WireGuardManager.IntegrationTests
             // Ensure real providers are used for integration tests
             WgSystemdManager.ProcessRunnerInstance = new ProcessRunner();
             WgSystemdManager.FileSystemProvider = new StandardFileSystem();
-            WgManagerConfig.FileSystemProvider = new StandardFileSystem(); // For WgSystemdManager loading its own config for paths
+            // WgSystemdManager's helper methods (GetSystemctlPathAsync etc.) call WgManagerConfig.LoadAsync()
+            // which uses WgManagerConfig.FileSystemProvider. So, reset it too.
+            WgManagerConfig.FileSystemProvider = new StandardFileSystem();
         }
 
         [SetUp]
@@ -132,6 +134,44 @@ namespace WireGuardManager.IntegrationTests
             Assert.That(await File.ReadAllTextAsync(expectedServiceFilePath), Is.EqualTo(initialContent), "Existing service file content should not be modified.");
             Assert.That(File.GetLastWriteTimeUtc(expectedServiceFilePath), Is.EqualTo(initialWriteTime), "Existing service file timestamp should not change if only checking enable status.");
             // The result here depends on `systemctl is-enabled` and `systemctl enable` if needed.
+        }
+
+        [Test]
+        public async Task EnsureServiceExistsAndEnabled_WithCustomPathsInConfig_UsesCustomPathsInServiceFile()
+        {
+            string customSystemdDir = Path.Combine(_testBaseDir, "custom_systemd_path_test");
+            Directory.CreateDirectory(customSystemdDir);
+            string customWgQuickPath = "/usr/local/bin/my-custom-wg-quick";
+            string interfaceName = "wgcustom0";
+
+            var customPathConfig = new WgManagerConfig
+            {
+                AllowSystemdManagement = true,
+                SystemdServicePath = customSystemdDir,
+                WgQuickPath = customWgQuickPath
+                // systemctlPath is not tested for file content, but for execution if systemctl was mocked/wrapped.
+            };
+
+            string expectedServiceFilePath = Path.Combine(customSystemdDir, $"wg-quick@{interfaceName}.service");
+            if (File.Exists(expectedServiceFilePath)) File.Delete(expectedServiceFilePath);
+
+            try
+            {
+                await WgSystemdManager.EnsureServiceExistsAndEnabled(interfaceName, customPathConfig);
+            }
+            catch (ExternalToolException ex) when (ex.ToolName.Contains("systemctl"))
+            {
+                TestContext.Progress.WriteLine($"systemctl command failed as potentially expected: {ex.Message}");
+            }
+            catch (PermissionsException pex)
+            {
+                 TestContext.Progress.WriteLine($"systemctl command failed with permissions as potentially expected: {pex.Message}");
+            }
+
+            Assert.That(File.Exists(expectedServiceFilePath), Is.True, "Service file should be created in custom SystemdServicePath.");
+            string serviceContent = await File.ReadAllTextAsync(expectedServiceFilePath);
+            Assert.That(serviceContent, Does.Contain($"ExecStart={customWgQuickPath} up %i"), "Service file content should use custom WgQuickPath for ExecStart.");
+            Assert.That(serviceContent, Does.Contain($"ExecStop={customWgQuickPath} down %i"), "Service file content should use custom WgQuickPath for ExecStop.");
         }
     }
 }

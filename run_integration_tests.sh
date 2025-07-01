@@ -36,13 +36,25 @@ echo "--- Running Integration Tests in Docker Container ---"
 # The Dockerfile's WORKDIR is /app.
 # The .NET SDK image's default entrypoint is dotnet, so we can directly pass test command.
 # Grant NET_ADMIN and SYS_MODULE capabilities for WireGuard interface operations.
-# Use --rm to automatically remove the container when it exits.
-docker run --rm \
+# Use --rm to automatically remove the container when it exits by default.
+DOCKER_RUN_OPTS="--rm"
+CONTAINER_NAME="wgmanager-it-container-$(date +%s)" # Unique name if kept
+
+if [[ "$1" == "--keep-container" ]]; then
+    echo "--- Will keep container alive after test run ---"
+    DOCKER_RUN_OPTS="--name $CONTAINER_NAME" # -d for detached is not used as we want to see test output
+fi
+
+docker run $DOCKER_RUN_OPTS \
     --cap-add NET_ADMIN \
     --cap-add SYS_MODULE \
     -v "$SOLUTION_DIR/$PUBLISH_TESTS_DIR:/app/tests" \
-    -v "$SOLUTION_DIR/$PUBLISH_LIB_DIR:/app/lib" \
     $DOCKER_IMAGE_NAME \
     dotnet test "/app/tests/WireGuardManager.IntegrationTests.dll" --logger "console;verbosity=detailed"
 
-echo "--- Integration tests finished ---"
+if [[ "$1" == "--keep-container" ]]; then
+    echo "--- Integration tests finished. Container '$CONTAINER_NAME' is kept. ---"
+    echo "To access it: docker exec -it $CONTAINER_NAME bash"
+else
+    echo "--- Integration tests finished. Container was removed. ---"
+fi
