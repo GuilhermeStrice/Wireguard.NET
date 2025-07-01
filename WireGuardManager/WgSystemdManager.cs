@@ -53,10 +53,19 @@ WantedBy=multi-user.target
 ";
         }
 
-        private static async Task RunSystemctlCommandAsync(string arguments, string operationDescription, WgManagerConfig? managerConfig = null, TimeSpan? timeout = null)
+        private static async Task RunSystemctlCommandAsync(string arguments, string operationDescription, WgManagerConfig? managerConfig = null, TimeSpan? explicitTimeout = null)
         {
-            string systemctlPath = await GetSystemctlPathAsync(managerConfig); // Use await
-            var result = await ProcessRunnerInstance.RunAsync(systemctlPath, arguments, timeout: timeout ?? Utilities.ProcessRunner.DefaultLongOperationTimeout);
+            string systemctlPath = await GetSystemctlPathAsync(managerConfig);
+
+            TimeSpan finalTimeout;
+            if (explicitTimeout.HasValue)
+                finalTimeout = explicitTimeout.Value;
+            else if (managerConfig?.DefaultLongOperationTimeoutSeconds.HasValue == true) // systemctl commands generally use long timeout
+                finalTimeout = TimeSpan.FromSeconds(managerConfig.DefaultLongOperationTimeoutSeconds.Value);
+            else
+                finalTimeout = Utilities.ProcessRunner.DefaultLongOperationTimeout;
+
+            var result = await ProcessRunnerInstance.RunAsync(systemctlPath, arguments, timeout: finalTimeout);
             if (!result.Success)
             {
                 if (result.StandardError.Contains("Access denied", StringComparison.OrdinalIgnoreCase) ||
@@ -126,8 +135,17 @@ WantedBy=multi-user.target
             }
 
             Console.WriteLine($"Checking if service {serviceFileName} is enabled...");
-            string systemctlPath = await GetSystemctlPathAsync(config); // Use await
-            var isEnabledResult = await ProcessRunnerInstance.RunAsync(systemctlPath, $"is-enabled {serviceFileName}", timeout: operationTimeout ?? Utilities.ProcessRunner.DefaultShortOperationTimeout);
+            string systemctlPath = await GetSystemctlPathAsync(config);
+
+            TimeSpan isEnabledFinalTimeout;
+            if (operationTimeout.HasValue)
+                isEnabledFinalTimeout = operationTimeout.Value;
+            else if (config.DefaultShortOperationTimeoutSeconds.HasValue)
+                isEnabledFinalTimeout = TimeSpan.FromSeconds(config.DefaultShortOperationTimeoutSeconds.Value);
+            else
+                isEnabledFinalTimeout = Utilities.ProcessRunner.DefaultShortOperationTimeout;
+
+            var isEnabledResult = await ProcessRunnerInstance.RunAsync(systemctlPath, $"is-enabled {serviceFileName}", timeout: isEnabledFinalTimeout);
 
             bool needsEnable = true;
             if (isEnabledResult.ExitCode == 0)

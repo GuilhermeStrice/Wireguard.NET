@@ -177,5 +177,64 @@ namespace WireGuardManager.Tests
             Assert.That(ex.ToolName, Does.EndWith("systemctl"));
             Assert.That(ex.Message, Does.Contain("enable wg-quick@wgtest0.service"));
         }
+
+        // --- Timeout Behavior Tests ---
+        [Test]
+        public void EnsureServiceExistsAndEnabled_UsesConfiguredTimeoutsForSystemctl()
+        {
+            // Test that systemctl daemon-reload and enable use DefaultLongOperationTimeoutSeconds from config
+            // And systemctl is-enabled uses DefaultShortOperationTimeoutSeconds from config
+
+            var configWithTimeouts = new WgManagerConfig {
+                AllowSystemdManagement = true,
+                SystemdServicePath = _testSystemdServiceDir,
+                DefaultShortOperationTimeoutSeconds = 3,
+                DefaultLongOperationTimeoutSeconds = 7
+            };
+            TimeSpan expectedLongTimeout = TimeSpan.FromSeconds(7);
+            TimeSpan expectedShortTimeout = TimeSpan.FromSeconds(3);
+
+            _mockFileSystem.Setup(fs => fs.FileExists(_expectedServiceFilePath)).Returns(false); // Ensure file creation + daemon-reload
+            _mockFileSystem.Setup(fs => fs.WriteAllTextAsync(_expectedServiceFilePath, It.IsAny<string>())).Returns(Task.CompletedTask);
+
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), "daemon-reload", null, expectedLongTimeout))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "", ""));
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"is-enabled wg-quick@{TestInterfaceName}.service", null, expectedShortTimeout))
+                              .ReturnsAsync(new ProcessExecutionResult(1, "disabled", "")); // Simulate disabled
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"enable wg-quick@{TestInterfaceName}.service", null, expectedLongTimeout))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "", ""));
+
+            Assert.DoesNotThrowAsync(async () => await WgSystemdManager.EnsureServiceExistsAndEnabled(TestInterfaceName, configWithTimeouts));
+
+            _mockProcessRunner.Verify(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), "daemon-reload", null, expectedLongTimeout), Times.Once);
+            _mockProcessRunner.Verify(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"is-enabled wg-quick@{TestInterfaceName}.service", null, expectedShortTimeout), Times.Once);
+            _mockProcessRunner.Verify(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"enable wg-quick@{TestInterfaceName}.service", null, expectedLongTimeout), Times.Once);
+        }
+
+        [Test]
+        public void EnsureServiceExistsAndEnabled_UsesExplicitTimeoutOverride()
+        {
+            var configWithDefaults = new WgManagerConfig {
+                AllowSystemdManagement = true,
+                SystemdServicePath = _testSystemdServiceDir,
+                DefaultShortOperationTimeoutSeconds = 3, // These should be overridden
+                DefaultLongOperationTimeoutSeconds = 7
+            };
+            TimeSpan explicitTimeout = TimeSpan.FromSeconds(11); // Explicitly passed timeout
+
+            _mockFileSystem.Setup(fs => fs.FileExists(_expectedServiceFilePath)).Returns(false);
+            _mockFileSystem.Setup(fs => fs.WriteAllTextAsync(_expectedServiceFilePath, It.IsAny<string>())).Returns(Task.CompletedTask);
+
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), "daemon-reload", null, explicitTimeout))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "", ""));
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"is-enabled wg-quick@{TestInterfaceName}.service", null, explicitTimeout)) // is-enabled also gets the explicit overall timeout
+                              .ReturnsAsync(new ProcessExecutionResult(1, "disabled", ""));
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"enable wg-quick@{TestInterfaceName}.service", null, explicitTimeout))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "", ""));
+
+            Assert.DoesNotThrowAsync(async () => await WgSystemdManager.EnsureServiceExistsAndEnabled(TestInterfaceName, configWithDefaults, explicitTimeout));
+
+            _mockProcessRunner.VerifyAll();
+        }
     }
 }

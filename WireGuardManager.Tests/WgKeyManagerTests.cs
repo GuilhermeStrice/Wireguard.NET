@@ -29,7 +29,7 @@ namespace WireGuardManager.Tests
             WgKeyManager.ProcessRunnerInstance = _mockProcessRunner.Object;
             WgKeyManager.FileSystemProvider = _mockFileSystem.Object;
 
-            _testConfig = new WgManagerConfig(); // Use default paths for tools unless specified
+            // _testConfig will be created per test as needed for timeout settings
         }
 
         [TearDown]
@@ -124,7 +124,8 @@ namespace WireGuardManager.Tests
         [Test]
         public void GeneratePresharedKeyAsync_GenPskFails_ThrowsExternalToolException()
         {
-            _mockProcessRunner.Setup(p => p.RunAsync("wg", "genpsk", null, It.IsAny<TimeSpan?>()))
+            _testConfig = new WgManagerConfig(); // Default config (no custom timeouts)
+            _mockProcessRunner.Setup(p => p.RunAsync("wg", "genpsk", null, Utilities.ProcessRunner.DefaultShortOperationTimeout))
                               .ReturnsAsync(new ProcessExecutionResult(1, "", "genpsk error"));
 
             var ex = Assert.ThrowsAsync<ExternalToolException>(() => WgKeyManager.GeneratePresharedKeyAsync(_testConfig));
@@ -132,6 +133,48 @@ namespace WireGuardManager.Tests
             Assert.That(ex.Message, Does.Contain("Failed to generate preshared key"));
             Assert.That(ex.StandardError, Is.EqualTo("genpsk error"));
         }
+
+        [Test]
+        public async Task GenerateKeyPairAsync_UsesConfiguredTimeout()
+        {
+            _testConfig = new WgManagerConfig { DefaultShortOperationTimeoutSeconds = 5 };
+            TimeSpan expectedTimeout = TimeSpan.FromSeconds(5);
+
+            _mockProcessRunner.Setup(p => p.RunAsync("wg", "genkey", null, expectedTimeout))
+                              .ReturnsAsync(new ProcessExecutionResult(0, MockPrivateKey + "\n", ""));
+            _mockFileSystem.Setup(fs => fs.GetTempFileName()).Returns("temp_file_timeout");
+            _mockFileSystem.Setup(fs => fs.WriteAllTextAsync("temp_file_timeout", MockPrivateKey)).Returns(Task.CompletedTask);
+            _mockProcessRunner.Setup(p => p.RunAsync("/bin/sh", It.Is<string>(s => s.Contains("wg pubkey < 'temp_file_timeout'")), null, expectedTimeout))
+                              .ReturnsAsync(new ProcessExecutionResult(0, MockPublicKey + "\n", ""));
+            _mockFileSystem.Setup(fs => fs.FileExists("temp_file_timeout")).Returns(true);
+            _mockFileSystem.Setup(fs => fs.DeleteFile("temp_file_timeout"));
+
+            await WgKeyManager.GenerateKeyPairAsync(_testConfig);
+
+            _mockProcessRunner.Verify(p => p.RunAsync("wg", "genkey", null, expectedTimeout), Times.Once);
+            _mockProcessRunner.Verify(p => p.RunAsync("/bin/sh", It.Is<string>(s => s.Contains("wg pubkey < 'temp_file_timeout'")), null, expectedTimeout), Times.Once);
+        }
+
+        [Test]
+        public async Task GenerateKeyPairAsync_UsesStaticDefaultTimeout_WhenConfigNotSet()
+        {
+             _testConfig = new WgManagerConfig { DefaultShortOperationTimeoutSeconds = null }; // Explicitly null
+            TimeSpan expectedTimeout = Utilities.ProcessRunner.DefaultShortOperationTimeout;
+
+            _mockProcessRunner.Setup(p => p.RunAsync("wg", "genkey", null, expectedTimeout))
+                              .ReturnsAsync(new ProcessExecutionResult(0, MockPrivateKey + "\n", ""));
+            _mockFileSystem.Setup(fs => fs.GetTempFileName()).Returns("temp_file_static_timeout");
+            _mockFileSystem.Setup(fs => fs.WriteAllTextAsync("temp_file_static_timeout", MockPrivateKey)).Returns(Task.CompletedTask);
+            _mockProcessRunner.Setup(p => p.RunAsync("/bin/sh", It.Is<string>(s => s.Contains("wg pubkey < 'temp_file_static_timeout'")), null, expectedTimeout))
+                              .ReturnsAsync(new ProcessExecutionResult(0, MockPublicKey + "\n", ""));
+             _mockFileSystem.Setup(fs => fs.FileExists("temp_file_static_timeout")).Returns(true);
+            _mockFileSystem.Setup(fs => fs.DeleteFile("temp_file_static_timeout"));
+
+            await WgKeyManager.GenerateKeyPairAsync(_testConfig); // Pass config with null timeout
+
+            _mockProcessRunner.Verify(p => p.RunAsync("wg", "genkey", null, expectedTimeout), Times.Once);
+        }
+
 
         // Tests for Pure C# methods (these do not use IProcessRunner or IFileSystem directly from WgKeyManager)
         [Test]

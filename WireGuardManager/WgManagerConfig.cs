@@ -25,7 +25,9 @@ namespace WireGuardManager
         public string? SystemctlPath { get; set; } = null;
         public string WireguardConfigDirectory { get; set; } = "/etc/wireguard";
         public string? MinimumLogLevel { get; set; } = "Info";
-        public bool EnableConsoleColors { get; set; } = true; // Default to true
+        public bool EnableConsoleColors { get; set; } = true;
+        public int? DefaultShortOperationTimeoutSeconds { get; set; } = null; // Default to null, ProcessRunner will use its static default
+        public int? DefaultLongOperationTimeoutSeconds { get; set; } = null;  // Default to null
 
         private static string GetDefaultConfigPath()
         {

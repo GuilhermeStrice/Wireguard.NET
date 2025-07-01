@@ -225,7 +225,46 @@ namespace WireGuardManager.Tests
 
             // Cleanup
             WgManagerConfig.FileSystemProvider = new StandardFileSystem();
-            ConsoleLoggingProvider.UseConsoleColors = originalColorSetting; // Reset global color setting
+            ConsoleLoggingProvider.UseConsoleColors = originalColorSetting;
+        }
+
+        [Test]
+        public async Task LoadAsync_ValidTimeoutSettingsInConfig_LoadsTimeouts()
+        {
+            var mockFileSystem = new Mock<IFileSystem>();
+            var tempConfigPath = Path.Combine(TestContext.CurrentContext.TestDirectory, "test_timeouts_config.json");
+            var configContent = @"{
+                ""defaultShortOperationTimeoutSeconds"": 10,
+                ""defaultLongOperationTimeoutSeconds"": 50
+            }";
+            mockFileSystem.Setup(fs => fs.FileExists(tempConfigPath)).Returns(true);
+            mockFileSystem.Setup(fs => fs.ReadAllTextAsync(tempConfigPath)).ReturnsAsync(configContent);
+            WgManagerConfig.FileSystemProvider = mockFileSystem.Object;
+
+            var config = await WgManagerConfig.LoadAsync(tempConfigPath);
+
+            Assert.That(config.DefaultShortOperationTimeoutSeconds, Is.EqualTo(10));
+            Assert.That(config.DefaultLongOperationTimeoutSeconds, Is.EqualTo(50));
+
+            WgManagerConfig.FileSystemProvider = new StandardFileSystem(); // Reset
+        }
+
+        [Test]
+        public async Task LoadAsync_MissingTimeoutSettingsInConfig_TimeoutsAreNull()
+        {
+            var mockFileSystem = new Mock<IFileSystem>();
+            var tempConfigPath = Path.Combine(TestContext.CurrentContext.TestDirectory, "test_no_timeouts_config.json");
+            var configContent = @"{ ""minimumLogLevel"": ""Debug"" }"; // Config without timeout settings
+            mockFileSystem.Setup(fs => fs.FileExists(tempConfigPath)).Returns(true);
+            mockFileSystem.Setup(fs => fs.ReadAllTextAsync(tempConfigPath)).ReturnsAsync(configContent);
+            WgManagerConfig.FileSystemProvider = mockFileSystem.Object;
+
+            var config = await WgManagerConfig.LoadAsync(tempConfigPath);
+
+            Assert.That(config.DefaultShortOperationTimeoutSeconds, Is.Null);
+            Assert.That(config.DefaultLongOperationTimeoutSeconds, Is.Null);
+
+            WgManagerConfig.FileSystemProvider = new StandardFileSystem(); // Reset
         }
     }
 }

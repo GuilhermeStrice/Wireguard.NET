@@ -31,10 +31,19 @@ namespace WireGuardManager
             return string.IsNullOrWhiteSpace(config.WgQuickPath) ? "wg-quick" : config.WgQuickPath;
         }
 
-        private static async Task<ProcessExecutionResult> RunWgCommandAsync(string arguments, WgManagerConfig? managerConfig = null, TimeSpan? timeout = null)
+        private static async Task<ProcessExecutionResult> RunWgCommandAsync(string arguments, WgManagerConfig? managerConfig = null, TimeSpan? explicitTimeout = null)
         {
-            string toolPath = await GetWgPathAsync(managerConfig); // Use await
-            var result = await ProcessRunnerInstance.RunAsync(toolPath, arguments, timeout: timeout ?? Utilities.ProcessRunner.DefaultShortOperationTimeout);
+            string toolPath = await GetWgPathAsync(managerConfig);
+
+            TimeSpan finalTimeout;
+            if (explicitTimeout.HasValue)
+                finalTimeout = explicitTimeout.Value;
+            else if (managerConfig?.DefaultShortOperationTimeoutSeconds.HasValue == true)
+                finalTimeout = TimeSpan.FromSeconds(managerConfig.DefaultShortOperationTimeoutSeconds.Value);
+            else
+                finalTimeout = Utilities.ProcessRunner.DefaultShortOperationTimeout;
+
+            var result = await ProcessRunnerInstance.RunAsync(toolPath, arguments, timeout: finalTimeout);
             if (!result.Success)
             {
                 if (result.StandardError.Contains("Operation not permitted", StringComparison.OrdinalIgnoreCase) ||
@@ -48,10 +57,19 @@ namespace WireGuardManager
             return result;
         }
 
-        private static async Task<ProcessExecutionResult> RunWgQuickCommandAsync(string arguments, WgManagerConfig? managerConfig = null, TimeSpan? timeout = null)
+        private static async Task<ProcessExecutionResult> RunWgQuickCommandAsync(string arguments, WgManagerConfig? managerConfig = null, TimeSpan? explicitTimeout = null)
         {
-            string toolPath = await GetWgQuickPathAsync(managerConfig); // Use await
-            var result = await ProcessRunnerInstance.RunAsync(toolPath, arguments, timeout: timeout ?? Utilities.ProcessRunner.DefaultLongOperationTimeout);
+            string toolPath = await GetWgQuickPathAsync(managerConfig);
+
+            TimeSpan finalTimeout;
+            if (explicitTimeout.HasValue)
+                finalTimeout = explicitTimeout.Value;
+            else if (managerConfig?.DefaultLongOperationTimeoutSeconds.HasValue == true)
+                finalTimeout = TimeSpan.FromSeconds(managerConfig.DefaultLongOperationTimeoutSeconds.Value);
+            else
+                finalTimeout = Utilities.ProcessRunner.DefaultLongOperationTimeout;
+
+            var result = await ProcessRunnerInstance.RunAsync(toolPath, arguments, timeout: finalTimeout);
             if (!result.Success)
             {
                  if (result.StandardError.Contains("Operation not permitted", StringComparison.OrdinalIgnoreCase) ||

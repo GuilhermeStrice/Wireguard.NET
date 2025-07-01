@@ -258,9 +258,15 @@ The `config.json` file can control these:
   "systemctlPath": null,
   "wireguardConfigDirectory": "/etc/wireguard",
   "minimumLogLevel": "Info",
-  "enableConsoleColors": true
+  "enableConsoleColors": true,
+  "defaultShortOperationTimeoutSeconds": 15,
+  "defaultLongOperationTimeoutSeconds": 60
 }
 ```
+*   `defaultShortOperationTimeoutSeconds` (integer, optional): Default timeout in seconds for quick external commands (e.g., `wg show`, `wg genkey`, `systemctl is-enabled`). Defaults to 15 seconds if not set.
+*   `defaultLongOperationTimeoutSeconds` (integer, optional): Default timeout in seconds for potentially longer external commands (e.g., `wg-quick up/down`, `systemctl enable/daemon-reload`). Defaults to 60 seconds if not set.
+
+Individual methods that call external tools may also accept an explicit `TimeSpan? timeout` parameter, which will override these configured defaults if provided.
 
 **Replacing the Logger:**
 

@@ -341,5 +341,61 @@ namespace WireGuardManager.Tests
             Assert.That(ex.ToolName, Is.EqualTo("wg_mocked_fail"));
             Assert.That(ex.StandardError, Is.EqualTo("fwmark error"));
         }
+
+        // --- Timeout Behavior Tests ---
+        [Test]
+        public async Task ShowAll_WithExplicitTimeout_UsesExplicitTimeout()
+        {
+            SetupMockWgManagerConfig(false, "/fake/systemd", wgPath: "wg_mock_timeout");
+            var explicitTimeout = TimeSpan.FromSeconds(3);
+            _mockProcessRunner.Setup(p => p.RunAsync("wg_mock_timeout", "show", null, explicitTimeout))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "output", ""));
+
+            await WgQuick.ShowAll(null, explicitTimeout); // Pass explicit timeout, null config (will load default)
+            _mockProcessRunner.Verify();
+        }
+
+        [Test]
+        public async Task ShowAll_WithConfiguredTimeout_UsesConfiguredTimeout()
+        {
+            SetupMockWgManagerConfig(false, "/fake/systemd", wgPath: "wg_mock_cfg_timeout", defaultShortSeconds: 7);
+            var expectedTimeout = TimeSpan.FromSeconds(7);
+             // Config object is loaded internally by ShowAll when customConfig is null
+            _mockProcessRunner.Setup(p => p.RunAsync("wg_mock_cfg_timeout", "show", null, expectedTimeout))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "output", ""));
+
+            await WgQuick.ShowAll(null, null); // No explicit timeout, should pick from config
+            _mockProcessRunner.Verify();
+        }
+
+        [Test]
+        public async Task ShowAll_WithNoExplicitOrConfiguredTimeout_UsesStaticDefault()
+        {
+            // Setup config with null for timeout to ensure static default is used
+            SetupMockWgManagerConfig(false, "/fake/systemd", wgPath: "wg_mock_static_timeout", defaultShortSeconds: null);
+            var expectedTimeout = Utilities.ProcessRunner.DefaultShortOperationTimeout;
+            _mockProcessRunner.Setup(p => p.RunAsync("wg_mock_static_timeout", "show", null, expectedTimeout))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "output", ""));
+
+            await WgQuick.ShowAll(null, null);
+            _mockProcessRunner.Verify();
+        }
+
+        // Helper method for setting up WgManagerConfig mock for timeout tests
+        private void SetupMockWgManagerConfig(bool allowSystemd, string systemdPath, string? wgPath = null, string? wgQuickPath = null, string? systemctlPath = null, int? defaultShortSeconds = null, int? defaultLongSeconds = null)
+        {
+            var configData = new {
+                AllowSystemdManagement = allowSystemd,
+                SystemdServicePath = systemdPath,
+                WgPath = wgPath,
+                WgQuickPath = wgQuickPath,
+                SystemctlPath = systemctlPath,
+                DefaultShortOperationTimeoutSeconds = defaultShortSeconds,
+                DefaultLongOperationTimeoutSeconds = defaultLongSeconds
+            };
+            string jsonConfig = JsonSerializer.Serialize(configData);
+            _mockFileSystem.Setup(fs => fs.FileExists(_tempConfigJsonPath)).Returns(true);
+            _mockFileSystem.Setup(fs => fs.ReadAllTextAsync(_tempConfigJsonPath)).ReturnsAsync(jsonConfig);
+        }
     }
 }

@@ -6,5 +6,7 @@
   "systemctlPath": null,
   "wireguardConfigDirectory": "/etc/wireguard",
   "minimumLogLevel": "Info",
-  "enableConsoleColors": true
+  "enableConsoleColors": true,
+  "defaultShortOperationTimeoutSeconds": 15,
+  "defaultLongOperationTimeoutSeconds": 60
 }
