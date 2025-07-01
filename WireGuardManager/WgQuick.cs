@@ -134,38 +134,43 @@ namespace WireGuardManager
 
             if (isInterfaceName)
             {
-                var config = customConfig ?? await WgManagerConfig.LoadAsync(); // Use await and LoadAsync
-                Console.WriteLine($"Attempting implicit systemd service check for interface '{interfaceNameOrPath}'. AllowSystemdManagement: {config.AllowSystemdManagement}");
+                var config = customConfig ?? await WgManagerConfig.LoadAsync();
+                WgLogging.Logger.LogDebug($"Attempting implicit systemd service check for interface '{interfaceNameOrPath}'. AllowSystemdManagement: {config.AllowSystemdManagement}");
                 if (config.AllowSystemdManagement)
                 {
                     try
                     {
-                        // Pass timeout to systemd operations as well, if applicable (EnsureServiceExistsAndEnabled might need modification or use a default)
-                        bool serviceOk = await WgSystemdManager.EnsureServiceExistsAndEnabled(interfaceNameOrPath, config /*, timeout */);
+                        bool serviceOk = await WgSystemdManager.EnsureServiceExistsAndEnabled(interfaceNameOrPath, config, timeout); // Pass timeout
                         if (serviceOk)
                         {
-                            Console.WriteLine($"Systemd service for '{interfaceNameOrPath}' ensured successfully or already existed and enabled.");
+                            WgLogging.Logger.LogInfo($"Systemd service for '{interfaceNameOrPath}' ensured successfully or already existed and enabled.");
                         }
                         else
                         {
-                             Console.WriteLine($"Warning: Could not ensure systemd service for '{interfaceNameOrPath}'. 'wg-quick up' will proceed.");
+                             // EnsureServiceExistsAndEnabled now logs its own warnings if it returns false for a known reason (like disabled by config)
+                             // or throws for actual errors. So, a generic warning here might be redundant if EnsureServiceExistsAndEnabled is robust in its own logging/exceptions.
+                             // However, if it returns false meaning "I tried but something minor stopped me from full success but didn't throw", a warning is okay.
+                             // Given its current design, if it returns false and didn't throw, it means AllowSystemdManagement was false, which is already logged by EnsureServiceExistsAndEnabled.
+                             // So, this else might not be strictly needed if EnsureServiceExistsAndEnabled handles its own logging/exceptions well.
+                             // For now, let's keep a general info message if serviceOk is false but no exception was caught by Up().
+                             WgLogging.Logger.LogInfo($"Systemd service check for '{interfaceNameOrPath}' completed; service may not have been modified if already ok or if management was disabled. 'wg-quick up' will proceed.");
                         }
                     }
                     catch (PermissionsException pex)
                     {
-                        Console.WriteLine($"Warning: Permission error during systemd management for '{interfaceNameOrPath}': {pex.Message}. 'wg-quick up' will proceed.");
+                        WgLogging.Logger.LogWarning($"Permission error during systemd management for '{interfaceNameOrPath}': {pex.Message}. 'wg-quick up' will proceed.");
                     }
                     catch (ExternalToolException etex)
                     {
-                         Console.WriteLine($"Warning: External tool error during systemd management for '{interfaceNameOrPath}': {etex.Message}. 'wg-quick up' will proceed.");
+                         WgLogging.Logger.LogWarning($"External tool error during systemd management for '{interfaceNameOrPath}': {etex.Message}. 'wg-quick up' will proceed.");
                     }
-                    catch (ProcessTimeoutException ptex) // Catch timeout from systemd operations
+                    catch (ProcessTimeoutException ptex)
                     {
-                         Console.WriteLine($"Warning: Timeout during systemd management for '{interfaceNameOrPath}': {ptex.Message}. 'wg-quick up' will proceed.");
+                         WgLogging.Logger.LogWarning($"Timeout during systemd management for '{interfaceNameOrPath}': {ptex.Message}. 'wg-quick up' will proceed.");
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Warning: Unexpected error during systemd management for '{interfaceNameOrPath}': {ex.Message}. 'wg-quick up' will proceed.");
+                        WgLogging.Logger.LogError($"Unexpected error during systemd management for '{interfaceNameOrPath}': {ex.Message}. 'wg-quick up' will proceed.", ex);
                     }
                 }
             }
@@ -325,7 +330,7 @@ namespace WireGuardManager
                     options.PresharedKey == null &&
                     options.PersistentKeepalive == null)
                 {
-                    WgLogging.Logger.LogInfo($"SetPeerAsync called for peer {peerPublicKey} on {interfaceName} with no specific properties to set (besides ensuring peer existence).");
+                    WgLogging.Logger.LogDebug($"SetPeerAsync called for peer {peerPublicKey} on {interfaceName} with no specific properties to set (besides ensuring peer existence).");
                     // 'wg set <if> peer <key>' is a valid command to ensure peer exists or add it.
                     // No further args needed if this is the intent.
                 }

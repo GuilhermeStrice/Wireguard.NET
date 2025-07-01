@@ -79,14 +79,13 @@ namespace WireGuardManager.Utilities
                         {
                             if (!process.HasExited)
                             {
-                                process.Kill(true); // Kill entire process tree if possible
-                                Console.WriteLine($"Warning: Process '{fileName} {arguments}' timed out after {timeout.Value.TotalSeconds}s and was killed.");
+                                process.Kill(true);
+                                WgLogging.Logger.LogWarning($"Process '{fileName} {arguments}' timed out after {timeout.Value.TotalSeconds}s and was killed.");
                             }
                         }
                         catch (Exception killEx)
                         {
-                            // Log or handle failure to kill, but the timeout exception is primary
-                            Console.WriteLine($"Warning: Failed to kill timed-out process '{fileName} {arguments}'. {killEx.Message}");
+                            WgLogging.Logger.LogWarning($"Failed to kill timed-out process '{fileName} {arguments}'. {killEx.Message}");
                         }
                         throw new ProcessTimeoutException(fileName, timeout.Value, $"{fileName} {arguments}");
                     }

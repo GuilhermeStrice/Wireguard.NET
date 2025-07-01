@@ -75,9 +75,9 @@ WantedBy=multi-user.target
                     throw new PermissionsException(operationDescription, $"systemctl {arguments}",
                         new ExternalToolException(SystemctlPath, $"Permission error while {operationDescription}.", result.ExitCode, result.StandardOutput, result.StandardError));
                 }
-                throw new ExternalToolException(SystemctlPath, $"Command 'systemctl {arguments}' failed during {operationDescription}.", result.ExitCode, result.StandardOutput, result.StandardError);
+                throw new ExternalToolException(systemctlPath, $"Command 'systemctl {arguments}' failed during {operationDescription}.", result.ExitCode, result.StandardOutput, result.StandardError);
             }
-            Console.WriteLine($"Successfully executed 'systemctl {arguments}'.");
+            WgLogging.Logger.LogDebug($"Successfully executed 'systemctl {arguments}'.");
         }
 
         // Default timeout for systemctl operations, can be overridden by WgQuick if needed there.
@@ -94,25 +94,25 @@ WantedBy=multi-user.target
 
             if (!config.AllowSystemdManagement)
             {
-                Console.WriteLine($"Systemd management is disabled by library configuration (AllowSystemdManagement=false). Skipping service check for {interfaceName}.");
+                WgLogging.Logger.LogInfo($"Systemd management is disabled by library configuration (AllowSystemdManagement=false). Skipping service check for {interfaceName}.");
                 return false;
             }
 
             var serviceFileName = $"wg-quick@{interfaceName}.service";
             var fullServicePath = Path.Combine(config.SystemdServicePath, serviceFileName);
 
-            Console.WriteLine($"Ensuring systemd service for {interfaceName} at {fullServicePath} (AllowSystemdManagement=true)");
+            WgLogging.Logger.LogDebug($"Ensuring systemd service for {interfaceName} at {fullServicePath} (AllowSystemdManagement=true).");
 
-            bool serviceFileExisted = FileSystemProvider.FileExists(fullServicePath); // Use IFileSystem
+            bool serviceFileExisted = FileSystemProvider.FileExists(fullServicePath);
 
             if (!serviceFileExisted)
             {
-                Console.WriteLine($"Service file {fullServicePath} does not exist. Attempting to create...");
+                WgLogging.Logger.LogInfo($"Service file {fullServicePath} does not exist. Attempting to create...");
                 try
                 {
-                    string serviceContent = await GetServiceFileContentAsync(interfaceName, config); // Use await
-                    await FileSystemProvider.WriteAllTextAsync(fullServicePath, serviceContent); // Use IFileSystem
-                    Console.WriteLine($"Successfully wrote service file {fullServicePath}.");
+                    string serviceContent = await GetServiceFileContentAsync(interfaceName, config);
+                    await FileSystemProvider.WriteAllTextAsync(fullServicePath, serviceContent);
+                    WgLogging.Logger.LogInfo($"Successfully wrote service file {fullServicePath}.");
                 }
                 catch (UnauthorizedAccessException ex)
                 {
@@ -125,16 +125,15 @@ WantedBy=multi-user.target
             }
             else
             {
-                Console.WriteLine($"Service file {fullServicePath} already exists.");
+                WgLogging.Logger.LogDebug($"Service file {fullServicePath} already exists.");
             }
 
             if (!serviceFileExisted)
             {
-                // Pass the WgManagerConfig (config) to RunSystemctlCommandAsync
                 await RunSystemctlCommandAsync("daemon-reload", "reloading systemd daemons", config, operationTimeout);
             }
 
-            Console.WriteLine($"Checking if service {serviceFileName} is enabled...");
+            WgLogging.Logger.LogDebug($"Checking if service {serviceFileName} is enabled...");
             string systemctlPath = await GetSystemctlPathAsync(config);
 
             TimeSpan isEnabledFinalTimeout;
@@ -153,23 +152,22 @@ WantedBy=multi-user.target
                 string outputTrimmed = isEnabledResult.StandardOutput.Trim();
                 if (outputTrimmed == "enabled" || outputTrimmed == "static")
                 {
-                    Console.WriteLine($"Service {serviceFileName} is already {outputTrimmed}.");
+                    WgLogging.Logger.LogInfo($"Service {serviceFileName} is already {outputTrimmed}.");
                     needsEnable = false;
                 }
                 else
                 {
-                     Console.WriteLine($"Service {serviceFileName} reported status: {outputTrimmed} (ExitCode: {isEnabledResult.ExitCode}). Will attempt to enable.");
+                     WgLogging.Logger.LogInfo($"Service {serviceFileName} reported status from 'is-enabled': {outputTrimmed} (ExitCode: {isEnabledResult.ExitCode}). Will attempt to enable.");
                 }
             }
             else
             {
-                 Console.WriteLine($"'systemctl is-enabled {serviceFileName}' indicated not enabled (ExitCode: {isEnabledResult.ExitCode}, Stdout: '{isEnabledResult.StandardOutput.Trim()}', Stderr: '{isEnabledResult.StandardError.Trim()}'). Will attempt to enable.");
+                 WgLogging.Logger.LogInfo($"'systemctl is-enabled {serviceFileName}' indicated not enabled (ExitCode: {isEnabledResult.ExitCode}, Stdout: '{isEnabledResult.StandardOutput.Trim()}', Stderr: '{isEnabledResult.StandardError.Trim()}'). Will attempt to enable.");
             }
 
             if (needsEnable)
             {
-                Console.WriteLine($"Attempting to enable service {serviceFileName}...");
-                // Pass the WgManagerConfig (config) to RunSystemctlCommandAsync
+                WgLogging.Logger.LogInfo($"Attempting to enable service {serviceFileName}...");
                 await RunSystemctlCommandAsync($"enable {serviceFileName}", $"enabling service {serviceFileName}", config, operationTimeout);
             }
             return true;

@@ -35,18 +35,19 @@ namespace WireGuardManager
             var assemblyDirectory = Path.GetDirectoryName(assemblyLocation);
             if (assemblyDirectory == null)
             {
+                WgLogging.Logger.LogWarning("Could not determine assembly directory for default config.json path. Using relative 'config.json'.");
                 return "config.json";
             }
             return Path.Combine(assemblyDirectory, "config.json");
         }
 
-        public static async Task<WgManagerConfig> LoadAsync(string? configFilePath = null) // Renamed to LoadAsync and made async
+        public static async Task<WgManagerConfig> LoadAsync(string? configFilePath = null)
         {
             string actualPath = configFilePath ?? GetDefaultConfigPath();
 
             if (!FileSystemProvider.FileExists(actualPath))
             {
-                Console.WriteLine($"Warning: Configuration file not found at '{actualPath}'. Using default settings.");
+                WgLogging.Logger.LogWarning($"Configuration file not found at '{actualPath}'. Using default WgManagerConfig settings.");
                 return new WgManagerConfig();
             }
 

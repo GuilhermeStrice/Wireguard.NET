@@ -38,15 +38,14 @@ namespace WireGuardManager
                 string? destDirectory = Path.GetDirectoryName(destFilePath);
                 if (!string.IsNullOrWhiteSpace(destDirectory))
                 {
-                    // Use EnsureDirectoryExists, which was added to IFileSystem
                     FileSystemProvider.EnsureDirectoryExists(destDirectory);
-                    Console.WriteLine($"Ensured destination directory '{destDirectory}' exists.");
+                    WgLogging.Logger.LogDebug($"Ensured destination directory '{destDirectory}' exists for deployment.");
                 }
 
-                Console.WriteLine($"Deploying '{sourceConfigPath}' to '{destFilePath}' (Overwrite: {overwrite})");
-                FileSystemProvider.CopyFile(sourceConfigPath, destFilePath, overwrite); // Use IFileSystem
-                Console.WriteLine($"Successfully deployed configuration to '{destFilePath}'.");
-                await Task.CompletedTask; // Keep async signature, though CopyFile is sync
+                WgLogging.Logger.LogInfo($"Deploying WireGuard configuration from '{sourceConfigPath}' to '{destFilePath}' (Overwrite: {overwrite}).");
+                FileSystemProvider.CopyFile(sourceConfigPath, destFilePath, overwrite);
+                WgLogging.Logger.LogInfo($"Successfully deployed configuration to '{destFilePath}'.");
+                await Task.CompletedTask;
             }
             catch (UnauthorizedAccessException ex)
             {
