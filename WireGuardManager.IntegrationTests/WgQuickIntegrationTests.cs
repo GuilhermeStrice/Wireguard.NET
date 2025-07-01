@@ -392,6 +392,47 @@ namespace WireGuardManager.IntegrationTests
         // Ensure the ordering makes sense or make tests more independent if Order attribute is removed.
         // For now, keeping Order to build on previous states where appropriate, but EnsureTestInterfaceUpWithInitialPeerAsync helps.
 
+        [Test, Order(15)] // New order for more PSK tests
+        public async Task SetPeerAsync_WithPresharedKeyFile_AppliesKey()
+        {
+            await EnsureTestInterfaceUpWithInitialPeerAsync(TestInterface, PeerPublicKey, "10.200.200.90/32"); // Use a unique IP for this peer instance
+
+            string pskContent = "FILE_PSK_CONTENT_FOR_INTEGRATION_TESTING=="; // Ensure valid 44-char base64
+            string pskFilePath = Path.Combine(_testBaseDir, "test_peer.psk");
+            await File.WriteAllTextAsync(pskFilePath, pskContent);
+
+            var options = new WgPeerUpdateOptions { PresharedKeyFile = pskFilePath };
+            var setResult = await WgQuick.SetPeerAsync(TestInterface, PeerPublicKey, options, _integrationTestConfig);
+            Assert.That(setResult.Success, Is.True, $"SetPeerAsync with PresharedKeyFile failed: {setResult.StandardError}");
+
+            var details = await WgQuick.ShowInterfaceDetailsAsync(TestInterface, _integrationTestConfig);
+            var peer = details?.Peers.FirstOrDefault(p => p.PublicKey == PeerPublicKey);
+            Assert.That(peer, Is.Not.Null, "Peer not found after PSK file update.");
+            Assert.That(peer?.PresharedKeyExists, Is.True, "PresharedKeyExists should be true after setting from file.");
+
+            File.Delete(pskFilePath); // Clean up test file
+        }
+
+        [Test, Order(16)]
+        public async Task SetPeerAsync_WithPresharedKeyString_AppliesKey()
+        {
+            // This peer might still have PSK from previous test if run in order, ensure interface is clean or use different peer.
+            // For simplicity, we'll re-ensure the interface state, which effectively resets the peer if it was the same.
+            await EnsureTestInterfaceUpWithInitialPeerAsync(TestInterface, PeerPublicKey, "10.200.200.91/32");
+
+            string pskString = "STRING_PSK_CONTENT_FOR_INTEGRATION_TEST=="; // Valid 44-char base64
+            var options = new WgPeerUpdateOptions { PresharedKey = pskString };
+
+            var setResult = await WgQuick.SetPeerAsync(TestInterface, PeerPublicKey, options, _integrationTestConfig);
+            Assert.That(setResult.Success, Is.True, $"SetPeerAsync with PresharedKey string failed: {setResult.StandardError}");
+
+            var details = await WgQuick.ShowInterfaceDetailsAsync(TestInterface, _integrationTestConfig);
+            var peer = details?.Peers.FirstOrDefault(p => p.PublicKey == PeerPublicKey);
+            Assert.That(peer, Is.Not.Null, "Peer not found after PSK string update.");
+            Assert.That(peer?.PresharedKeyExists, Is.True, "PresharedKeyExists should be true after setting from string.");
+        }
+
+
         [Test, Order(20)] // After SetPeerAsync tests
         public async Task Save_UpdatesConfFile_AfterLiveChanges()
         {
@@ -676,6 +717,55 @@ namespace WireGuardManager.IntegrationTests
 
             // Cleanup
             try { await ProcessRunnerInstance.RunAsync("ip", $"link del {interfaceName}"); } catch {}
+        }
+
+        [Test, Order(30)]
+        public async Task SetInterfaceFwMarkAsync_SetsAndRemovesFwMark()
+        {
+            string interfaceName = "wg_fwmark_test";
+            // Ensure interface is up
+            var serverConf = new WgServerConfig(ServerPrivateKey) { Address = new List<string> { "10.200.205.1/24" }, ListenPort = 51835 };
+            await CreateAndDeployTestConfig(interfaceName, serverConf);
+            await WgQuick.Up(interfaceName, _integrationTestConfig);
+
+            // 1. Set a fwmark
+            string fwmarkToSet = "0xCAFE";
+            var setResult = await WgQuick.SetInterfaceFwMarkAsync(interfaceName, fwmarkToSet, _integrationTestConfig);
+            Assert.That(setResult.Success, Is.True, $"Failed to set fwmark '{fwmarkToSet}': {setResult.StandardError}");
+
+            var detailsAfterSet = await WgQuick.ShowInterfaceDetailsAsync(interfaceName, _integrationTestConfig);
+            Assert.That(detailsAfterSet, Is.Not.Null);
+            // Note: 'wg show dump' fwmark can be hex (0xcafe) or decimal. 'wg set' accepts both.
+            // We should be flexible in assertion or ensure we know what format 'wg show dump' uses.
+            // Typically, `wg show dump` outputs fwmark in decimal if it was set as decimal, or hex if set as hex.
+            // Let's assume it might come back as decimal for a hex input, or vice-versa, or just check for non-off.
+            // For simplicity, check it's not "off" (null in our DTO). A more precise check would convert hex to decimal.
+            // A "0x" prefix means hex. If no prefix, it's decimal. "off" is literal.
+            // Our parser sets FwMark to null if "off", otherwise the string value.
+            Assert.That(detailsAfterSet.FwMark, Is.Not.Null.And.Not.EqualTo("off").IgnoreCase, $"FwMark should be '{fwmarkToSet}' or its decimal equivalent, but was '{detailsAfterSet.FwMark}'.");
+            if (fwmarkToSet.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                uint expectedDecimal = Convert.ToUInt32(fwmarkToSet, 16);
+                Assert.That(detailsAfterSet.FwMark, Is.EqualTo(expectedDecimal.ToString())
+                    .Or.EqualTo(fwmarkToSet.ToLowerInvariant()) // some wg versions might keep hex
+                    .Or.EqualTo(fwmarkToSet.ToUpperInvariant()) );
+            }
+            else // was decimal
+            {
+                 Assert.That(detailsAfterSet.FwMark, Is.EqualTo(fwmarkToSet));
+            }
+
+
+            // 2. Set fwmark to "off"
+            var offResult = await WgQuick.SetInterfaceFwMarkAsync(interfaceName, "off", _integrationTestConfig);
+            Assert.That(offResult.Success, Is.True, $"Failed to set fwmark to 'off': {offResult.StandardError}");
+
+            var detailsAfterOff = await WgQuick.ShowInterfaceDetailsAsync(interfaceName, _integrationTestConfig);
+            Assert.That(detailsAfterOff, Is.Not.Null);
+            Assert.That(detailsAfterOff.FwMark, Is.Null, "FwMark should be null (off) after setting to 'off'."); // WgShowParser sets "off" to null
+
+            // Cleanup
+            await WgQuick.Down(interfaceName, _integrationTestConfig);
         }
     }
 }

@@ -136,6 +136,57 @@ This typically requires root privileges and an existing interface.
 // ... check syncResult ...
 ```
 
+**6. Managing Live Interfaces (using `wg set`)**
+
+The library provides methods to modify live WireGuard interfaces using the `wg set` command.
+
+**Updating Peer Properties with `SetPeerAsync`:**
+
+Use `WgQuick.SetPeerAsync` along with `WgPeerUpdateOptions` to change specific peer properties like `AllowedIPs`, `Endpoint`, `PresharedKey`, or `PersistentKeepalive`. You can also remove a peer.
+
+```csharp
+// string interfaceName = "wg0";
+// string peerPublicKey = "PEER_PUBLIC_KEY_TO_UPDATE=";
+// WgManagerConfig config = await WgManagerConfig.LoadAsync(); // Or pass your loaded config
+
+var updateOptions = new WgPeerUpdateOptions
+{
+    AllowedIPs = new List<string> { "10.0.0.5/32" },
+    Endpoint = "new.peer.address.com:12345"
+    // PresharedKey = "NEW_PSK_STRING===============================", // Library handles temp file
+    // PresharedKeyFile = "/path/to/new_psk.key", // Alternative to PresharedKey string
+    // PresharedKey = "off", // To remove PSK
+    // PersistentKeepalive = 30,
+    // Remove = true // To remove the peer entirely
+};
+
+// try
+// {
+//     var setResult = await WgQuick.SetPeerAsync(interfaceName, peerPublicKey, updateOptions, config);
+//     if (setResult.Success) Console.WriteLine("Peer updated!");
+//     else Console.WriteLine($"Peer update failed: {setResult.StandardError}");
+// }
+// catch (Exception ex) { Console.WriteLine($"Error: {ex.Message}"); }
+```
+*   If `PresharedKeyFile` is set, its content is used.
+*   If `PresharedKey` is a Base64 string, the library writes it to a temporary file for `wg set`.
+*   If `PresharedKey` is "off", the preshared key is removed.
+
+**Setting Interface Firewall Mark (`fwmark`) with `SetInterfaceFwMarkAsync`:**
+
+```csharp
+// string interfaceName = "wg0";
+// WgManagerConfig config = await WgManagerConfig.LoadAsync();
+
+// Set fwmark
+// await WgQuick.SetInterfaceFwMarkAsync(interfaceName, "0xCAFE", config);
+// Console.WriteLine("Fwmark set to 0xCAFE.");
+
+// Remove fwmark
+// await WgQuick.SetInterfaceFwMarkAsync(interfaceName, "off", config); // or null
+// Console.WriteLine("Fwmark removed.");
+```
+
 ## Building the Library
 
 The library is a standard .NET 6 project.

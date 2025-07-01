@@ -247,5 +247,99 @@ namespace WireGuardManager.Tests
             var ex = Assert.ThrowsAsync<InvalidInputException>(() => WgQuick.Save("invalid!!name.conf"));
             Assert.That(ex.Message, Does.Contain("Invalid interface name format"));
         }
+
+        // --- SetPeerAsync Unit Tests ---
+        [Test]
+        public async Task SetPeerAsync_WithPresharedKeyFile_FormsCorrectCommand()
+        {
+            SetupMockWgManagerConfig(false, "/fake/systemd", wgPath: "wg_mock");
+            var options = new WgPeerUpdateOptions { PresharedKeyFile = "/path/to/psk.key" };
+            _mockProcessRunner.Setup(p => p.RunAsync("wg_mock", It.Is<string>(s => s.Contains("preshared-key \"/path/to/psk.key\"")), null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "", ""));
+
+            await WgQuick.SetPeerAsync("wg0", AnotherPeerPublicKey, options);
+            _mockProcessRunner.Verify();
+        }
+
+        [Test]
+        public async Task SetPeerAsync_WithPresharedKeyString_UsesTempFileAndFormsCorrectCommand()
+        {
+            SetupMockWgManagerConfig(false, "/fake/systemd", wgPath: "wg_mock");
+            string pskString = "PRESHARED_KEY_STRING_FOR_TESTINGAAAAAAAAAAA=";
+            var options = new WgPeerUpdateOptions { PresharedKey = pskString };
+
+            _mockFileSystem.Setup(fs => fs.GetTempFileName()).Returns("temp_psk.txt");
+            _mockFileSystem.Setup(fs => fs.WriteAllTextAsync("temp_psk.txt", pskString)).Returns(Task.CompletedTask);
+            _mockFileSystem.Setup(fs => fs.FileExists("temp_psk.txt")).Returns(true); // For deletion check
+            _mockFileSystem.Setup(fs => fs.DeleteFile("temp_psk.txt"));
+
+            _mockProcessRunner.Setup(p => p.RunAsync("wg_mock", It.Is<string>(s => s.Contains("preshared-key \"temp_psk.txt\"")), null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "", ""));
+
+            await WgQuick.SetPeerAsync("wg0", AnotherPeerPublicKey, options);
+
+            _mockFileSystem.Verify(fs => fs.GetTempFileName(), Times.Once);
+            _mockFileSystem.Verify(fs => fs.WriteAllTextAsync("temp_psk.txt", pskString), Times.Once);
+            _mockProcessRunner.Verify(); // Verifies the RunAsync call with the specific command part
+            _mockFileSystem.Verify(fs => fs.DeleteFile("temp_psk.txt"), Times.Once);
+        }
+
+        [Test]
+        public async Task SetPeerAsync_WithPresharedKeyOff_FormsCorrectCommand()
+        {
+            SetupMockWgManagerConfig(false, "/fake/systemd", wgPath: "wg_mock");
+            var options = new WgPeerUpdateOptions { PresharedKey = "off" };
+             _mockProcessRunner.Setup(p => p.RunAsync("wg_mock", It.Is<string>(s => s.Contains("preshared-key off")), null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "", ""));
+
+            await WgQuick.SetPeerAsync("wg0", AnotherPeerPublicKey, options);
+            _mockProcessRunner.Verify();
+        }
+
+        [Test]
+        public void SetPeerAsync_InvalidPresharedKeyString_ThrowsInvalidInputException()
+        {
+            SetupMockWgManagerConfig(false, "/fake/systemd");
+            var options = new WgPeerUpdateOptions { PresharedKey = "not_a_valid_key_or_off" };
+            var ex = Assert.ThrowsAsync<InvalidInputException>(() => WgQuick.SetPeerAsync("wg0", AnotherPeerPublicKey, options));
+            Assert.That(ex.Message, Does.Contain("Invalid PresharedKey string format"));
+        }
+
+        // --- SetInterfaceFwMarkAsync Unit Tests ---
+        [TestCase("wg0", "12345", "set \"wg0\" fwmark \"12345\"")]
+        [TestCase("wg-north", "0xABC", "set \"wg-north\" fwmark \"0xABC\"")]
+        [TestCase("wg1", "off", "set \"wg1\" fwmark \"off\"")]
+        [TestCase("wg2", null, "set \"wg2\" fwmark \"off\"")] // Null should default to "off"
+        [TestCase("wg3", "  ", "set \"wg3\" fwmark \"off\"")]  // Whitespace should default to "off"
+        public async Task SetInterfaceFwMarkAsync_FormsCorrectCommand(string interfaceName, string? fwmarkInput, string expectedCommandArgs)
+        {
+            SetupMockWgManagerConfig(false, "/fake/systemd", wgPath: "wg_mocked");
+            _mockProcessRunner.Setup(p => p.RunAsync("wg_mocked", expectedCommandArgs, null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "success", ""));
+
+            await WgQuick.SetInterfaceFwMarkAsync(interfaceName, fwmarkInput);
+
+            _mockProcessRunner.Verify(p => p.RunAsync("wg_mocked", expectedCommandArgs, null, It.IsAny<TimeSpan?>()), Times.Once);
+        }
+
+        [Test]
+        public void SetInterfaceFwMarkAsync_InvalidInterfaceName_ThrowsInvalidInputException()
+        {
+            SetupMockWgManagerConfig(false, "/fake/systemd");
+            var ex = Assert.ThrowsAsync<InvalidInputException>(() => WgQuick.SetInterfaceFwMarkAsync("!!invalid", "123"));
+            Assert.That(ex.ParamName, Is.EqualTo("interfaceName"));
+        }
+
+        [Test]
+        public void SetInterfaceFwMarkAsync_WgSetFails_ThrowsExternalToolException()
+        {
+            SetupMockWgManagerConfig(false, "/fake/systemd", wgPath: "wg_mocked_fail");
+            _mockProcessRunner.Setup(p => p.RunAsync("wg_mocked_fail", It.IsAny<string>(), null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(1, "", "fwmark error"));
+
+            var ex = Assert.ThrowsAsync<ExternalToolException>(() => WgQuick.SetInterfaceFwMarkAsync("wg0", "123"));
+            Assert.That(ex.ToolName, Is.EqualTo("wg_mocked_fail"));
+            Assert.That(ex.StandardError, Is.EqualTo("fwmark error"));
+        }
     }
 }
