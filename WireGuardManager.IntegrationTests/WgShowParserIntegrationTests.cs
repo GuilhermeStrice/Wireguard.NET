@@ -20,10 +20,13 @@ namespace WireGuardManager.IntegrationTests
 
         // Use known valid key pairs for reproducible tests
         private const string ServerPrivateKey = "PRIVATEKEY_SERVER_WgShowParserIntegrationTests="; // Replace with actual valid key
-        private const string ServerPublicKey = "PUBLICKEY_SERVER_WgShowParserIntegrationTests=";  // Replace with actual valid key
-        private const string Peer1PublicKey = "PUBLICKEY_PEER1_WgShowParserIntegrationTests=";
-        private const string Peer1Psk = "PRESHAREDKEY_PEER1_WgShowParserIntegrationT=";
-        private const string Peer2PublicKey = "PUBLICKEY_PEER2_WgShowParserIntegrationTests=";
+        private const string ServerPublicKey = "PUBLICKEY_SERVER_WgShowParserIntegrationTests=";
+        private const string Peer1PublicKey = "PUBLICKEY_PEER1_WgShowParserIntegrationTests="; // Peer A
+        private const string Peer2PublicKey = "PUBLICKEY_PEER2_WgShowParserIntegrationTests="; // Peer B
+        private const string Peer3PublicKey = "PUBLICKEY_PEER3_WgShowParserIntegrationTests="; // Peer C
+        private const string Peer3Psk = "PRESHAREDKEY_PEER3_WgShowParserIntegrationT=";
+        private const string Peer4PublicKey = "PUBLICKEY_PEER4_WgShowParserIntegrationTests="; // Peer D
+
 
         [OneTimeSetUp]
         public async Task GlobalSetup()
@@ -57,37 +60,55 @@ namespace WireGuardManager.IntegrationTests
             // Peer2PublicKey = peer2Keys.PublicKey;
             // TestContext.Progress.WriteLine($"WgShowParserTests Using ServerPubKey: {ServerPublicKey}, Peer1PubKey: {Peer1PublicKey}, Peer2PubKey: {Peer2PublicKey}");
             // For now, I'll keep the placeholders and assume they are valid and matched for structure.
-            // In a real scenario, generating them once and logging them for use in tests is better.
             // The placeholders MUST be 44 chars and end with =
             Assert.That(ValidationUtils.IsValidWireGuardKey(ServerPrivateKey), "Test ServerPrivateKey placeholder is invalid.");
             Assert.That(ValidationUtils.IsValidWireGuardKey(ServerPublicKey), "Test ServerPublicKey placeholder is invalid.");
-            Assert.That(ValidationUtils.IsValidWireGuardKey(Peer1PublicKey), "Test Peer1PublicKey placeholder is invalid.");
-            Assert.That(ValidationUtils.IsValidWireGuardKey(Peer1Psk), "Test Peer1Psk placeholder is invalid.");
-            Assert.That(ValidationUtils.IsValidWireGuardKey(Peer2PublicKey), "Test Peer2PublicKey placeholder is invalid.");
+            Assert.That(ValidationUtils.IsValidWireGuardKey(Peer1PublicKey), "Test Peer1PublicKey (PeerA) placeholder is invalid.");
+            Assert.That(ValidationUtils.IsValidWireGuardKey(Peer2PublicKey), "Test Peer2PublicKey (PeerB) placeholder is invalid.");
+            Assert.That(ValidationUtils.IsValidWireGuardKey(Peer3PublicKey), "Test Peer3PublicKey (PeerC) placeholder is invalid.");
+            Assert.That(ValidationUtils.IsValidWireGuardKey(Peer3Psk), "Test Peer3Psk placeholder is invalid.");
+            Assert.That(ValidationUtils.IsValidWireGuardKey(Peer4PublicKey), "Test Peer4PublicKey (PeerD) placeholder is invalid.");
 
-
-            // Setup a test interface with multiple peers and properties
+            // Setup a test interface with multiple diverse peers
             var serverConf = new WgServerConfig(ServerPrivateKey)
             {
-                Address = new List<string> { "10.250.0.1/24" },
-                ListenPort = 51900
+                Address = new List<string> { "10.250.0.1/24", "fd00:cafe::1/64" },
+                ListenPort = 51900,
+                Dns = new List<string> { "1.1.1.1" }
             };
-            var peer1Conf = new WgPeerConfig(Peer1PublicKey)
+
+            // Peer A: Only AllowedIPs
+            var peerAConf = new WgPeerConfig(Peer1PublicKey)
             {
-                AllowedIPs = new List<string> { "10.250.0.2/32" },
-                PresharedKey = Peer1Psk,
-                Endpoint = "127.0.0.1:12345", // Dummy endpoint, won't connect
-                PersistentKeepalive = 25
+                AllowedIPs = new List<string> { "10.250.0.2/32", "fd00:cafe::2/128" }
             };
-            var peer2Conf = new WgPeerConfig(Peer2PublicKey)
+
+            // Peer B: AllowedIPs, Endpoint
+            var peerBConf = new WgPeerConfig(Peer2PublicKey)
             {
-                AllowedIPs = new List<string> { "10.250.0.3/32" }
-                // No PSK, no endpoint, no keepalive for variety
+                AllowedIPs = new List<string> { "10.250.0.3/32" },
+                Endpoint = "peerB.example.com:12345"
+            };
+
+            // Peer C: AllowedIPs, PresharedKey (string)
+            var peerCConf = new WgPeerConfig(Peer3PublicKey)
+            {
+                AllowedIPs = new List<string> { "10.250.0.4/32" },
+                PresharedKey = Peer3Psk
+            };
+
+            // Peer D: AllowedIPs, PersistentKeepalive
+            var peerDConf = new WgPeerConfig(Peer4PublicKey)
+            {
+                AllowedIPs = new List<string> { "10.250.0.5/32" },
+                PersistentKeepalive = 30
             };
 
             var wgConfig = new WgConfig(serverConf);
-            wgConfig.AddPeer(peer1Conf);
-            wgConfig.AddPeer(peer2Conf);
+            wgConfig.AddPeer(peerAConf);
+            wgConfig.AddPeer(peerBConf);
+            wgConfig.AddPeer(peerCConf);
+            wgConfig.AddPeer(peerDConf);
 
             string tempSourcePath = Path.Combine(_testBaseDir, $"{TestInterface}_source.conf");
             wgConfig.ToFile(tempSourcePath);
@@ -129,37 +150,52 @@ namespace WireGuardManager.IntegrationTests
             Assert.That(details.Name, Is.EqualTo(TestInterface));
             Assert.That(details.PublicKey, Is.EqualTo(ServerPublicKey));
             Assert.That(details.ListenPort, Is.EqualTo(51900));
-            // FwMark is 'off' by default, which WgShowParser sets to null.
             Assert.That(details.FwMark, Is.Null.Or.EqualTo("off").IgnoreCase, "FwMark mismatch.");
+            // Server DNS not directly available in 'wg show dump' for the interface line,
+            // it's a config item applied by wg-quick. So we can't assert details.Dns here.
 
+            Assert.That(details.Peers, Has.Count.EqualTo(4), "Should have 4 peers.");
 
-            Assert.That(details.Peers, Has.Count.EqualTo(2), "Should have 2 peers.");
+            // Peer A (Peer1PublicKey): Only AllowedIPs
+            var peerAInfo = details.Peers.FirstOrDefault(p => p.PublicKey == Peer1PublicKey);
+            Assert.That(peerAInfo, Is.Not.Null, $"Peer A ({Peer1PublicKey}) not found.");
+            Assert.That(peerAInfo.AllowedIPs, Is.EquivalentTo(new List<string> { "10.250.0.2/32", "fd00:cafe::2/128" }));
+            Assert.That(peerAInfo.PresharedKeyExists, Is.False, "Peer A PSK should not exist.");
+            Assert.That(peerAInfo.Endpoint, Is.Null.Or.Empty.Or.EqualTo("(none)"), "Peer A Endpoint should be null or '(none)'.");
+            Assert.That(peerAInfo.PersistentKeepaliveIntervalSeconds, Is.Null, "Peer A PersistentKeepalive should be null (off).");
+            Assert.That(peerAInfo.LatestHandshake, Is.Null, "Peer A LatestHandshake should be null initially.");
+            Assert.That(peerAInfo.TransferRxBytes, Is.EqualTo(0), "Peer A RxBytes should be 0 initially.");
+            Assert.That(peerAInfo.TransferTxBytes, Is.EqualTo(0), "Peer A TxBytes should be 0 initially.");
 
-            var peer1Info = details.Peers.FirstOrDefault(p => p.PublicKey == Peer1PublicKey);
-            Assert.That(peer1Info, Is.Not.Null, $"Peer {Peer1PublicKey} not found.");
-            Assert.That(peer1Info.PresharedKeyExists, Is.True, "Peer1 PSK should exist.");
-            // Endpoint in dump output might resolve if it's a hostname, or show IP. For IP, it should match.
-            // Since we used an IP, it should be fairly stable.
-            // Note: `wg show <iface> dump` shows resolved IPs for endpoints if hostnames were used in config.
-            // Our test uses an IP "127.0.0.1:12345"
-            Assert.That(peer1Info.Endpoint, Does.StartWith("127.0.0.1:"), $"Peer1 Endpoint mismatch. Got: {peer1Info.Endpoint}");
-            Assert.That(peer1Info.AllowedIPs, Is.EquivalentTo(new List<string> { "10.250.0.2/32" }));
-            // LatestHandshake will be null as no actual connection is made.
-            Assert.That(peer1Info.LatestHandshake, Is.Null, "Peer1 LatestHandshake should be null.");
-            Assert.That(peer1Info.TransferRxBytes, Is.EqualTo(0), "Peer1 RxBytes should be 0.");
-            Assert.That(peer1Info.TransferTxBytes, Is.EqualTo(0), "Peer1 TxBytes should be 0.");
-            Assert.That(peer1Info.PersistentKeepaliveIntervalSeconds, Is.EqualTo(25));
+            // Peer B (Peer2PublicKey): AllowedIPs, Endpoint
+            var peerBInfo = details.Peers.FirstOrDefault(p => p.PublicKey == Peer2PublicKey);
+            Assert.That(peerBInfo, Is.Not.Null, $"Peer B ({Peer2PublicKey}) not found.");
+            Assert.That(peerBInfo.AllowedIPs, Is.EquivalentTo(new List<string> { "10.250.0.3/32" }));
+            Assert.That(peerBInfo.PresharedKeyExists, Is.False, "Peer B PSK should not exist.");
+            // `wg show dump` resolves hostnames for endpoints. "peerB.example.com" might resolve or fail.
+            // If it fails to resolve, it might show the hostname itself or (none).
+            // If it resolves (e.g. if it was in /etc/hosts in the container), it would show the IP.
+            // For robustness, check if it's not null if we expect it, or check for specific patterns.
+            // Given it's a dummy hostname, it likely won't resolve to an IP.
+            // `wg show dump` often shows the literal string if it cannot resolve or if it's an IP.
+            Assert.That(peerBInfo.Endpoint, Is.EqualTo("peerB.example.com:12345").Or.EqualTo("(none)"), $"Peer B Endpoint mismatch. Got: {peerBInfo.Endpoint}");
+            Assert.That(peerBInfo.PersistentKeepaliveIntervalSeconds, Is.Null, "Peer B PersistentKeepalive should be null (off).");
 
+            // Peer C (Peer3PublicKey): AllowedIPs, PresharedKey
+            var peerCInfo = details.Peers.FirstOrDefault(p => p.PublicKey == Peer3PublicKey);
+            Assert.That(peerCInfo, Is.Not.Null, $"Peer C ({Peer3PublicKey}) not found.");
+            Assert.That(peerCInfo.AllowedIPs, Is.EquivalentTo(new List<string> { "10.250.0.4/32" }));
+            Assert.That(peerCInfo.PresharedKeyExists, Is.True, "Peer C PSK should exist.");
+            Assert.That(peerCInfo.Endpoint, Is.Null.Or.Empty.Or.EqualTo("(none)"), "Peer C Endpoint should be null or '(none)'.");
+            Assert.That(peerCInfo.PersistentKeepaliveIntervalSeconds, Is.Null, "Peer C PersistentKeepalive should be null (off).");
 
-            var peer2Info = details.Peers.FirstOrDefault(p => p.PublicKey == Peer2PublicKey);
-            Assert.That(peer2Info, Is.Not.Null, $"Peer {Peer2PublicKey} not found.");
-            Assert.That(peer2Info.PresharedKeyExists, Is.False, "Peer2 PSK should not exist.");
-            Assert.That(peer2Info.Endpoint, Is.Null.Or.Empty.Or.EqualTo("(none)"), "Peer2 Endpoint should be null or '(none)'.");
-            Assert.That(peer2Info.AllowedIPs, Is.EquivalentTo(new List<string> { "10.250.0.3/32" }));
-            Assert.That(peer2Info.LatestHandshake, Is.Null);
-            Assert.That(peer2Info.TransferRxBytes, Is.EqualTo(0));
-            Assert.That(peer2Info.TransferTxBytes, Is.EqualTo(0));
-            Assert.That(peer2Info.PersistentKeepaliveIntervalSeconds, Is.Null, "Peer2 PersistentKeepalive should be null (off).");
+            // Peer D (Peer4PublicKey): AllowedIPs, PersistentKeepalive
+            var peerDInfo = details.Peers.FirstOrDefault(p => p.PublicKey == Peer4PublicKey);
+            Assert.That(peerDInfo, Is.Not.Null, $"Peer D ({Peer4PublicKey}) not found.");
+            Assert.That(peerDInfo.AllowedIPs, Is.EquivalentTo(new List<string> { "10.250.0.5/32" }));
+            Assert.That(peerDInfo.PresharedKeyExists, Is.False, "Peer D PSK should not exist.");
+            Assert.That(peerDInfo.Endpoint, Is.Null.Or.Empty.Or.EqualTo("(none)"), "Peer D Endpoint should be null or '(none)'.");
+            Assert.That(peerDInfo.PersistentKeepaliveIntervalSeconds, Is.EqualTo(30));
         }
 
         [Test]
@@ -173,7 +209,68 @@ namespace WireGuardManager.IntegrationTests
 
             Assert.That(testInterfaceDetails.PublicKey, Is.EqualTo(ServerPublicKey));
             Assert.That(testInterfaceDetails.ListenPort, Is.EqualTo(51900));
-            Assert.That(testInterfaceDetails.Peers, Has.Count.EqualTo(2));
+            Assert.That(testInterfaceDetails.Peers, Has.Count.EqualTo(4)); // Should be 4 peers from setup
+        }
+
+        [Test, Order(2)] // Run after initial setup and ShowInterfaceDetailsAsync_ParsesAllFieldsCorrectly
+        public async Task SetPeerAsync_ModifyOneOfMultiplePeers_VerifiesChange()
+        {
+            // TestInterface is already up with 4 diverse peers from OneTimeSetUp
+            string peerToModifyPubKey = Peer2PublicKey; // Peer B (initially has an endpoint, no PSK, no keepalive)
+            string newEndpoint = "1.2.3.4:54321";
+            string newPsk = "NEW_PSK_FOR_PEER_B_INTEGRATION_TESTS_AAA=";
+            Assert.That(ValidationUtils.IsValidWireGuardKey(newPsk), "Test PSK string is invalid.");
+
+            var updateOptions = new WgPeerUpdateOptions
+            {
+                Endpoint = newEndpoint,
+                PresharedKey = newPsk // Set PSK via string (will use temp file)
+            };
+
+            var setResult = await WgQuick.SetPeerAsync(TestInterface, peerToModifyPubKey, updateOptions, _integrationTestConfig);
+            Assert.That(setResult.Success, Is.True, $"SetPeerAsync failed to modify Peer B: {setResult.StandardError}");
+
+            var detailsAfterUpdate = await WgQuick.ShowInterfaceDetailsAsync(TestInterface, _integrationTestConfig);
+            Assert.That(detailsAfterUpdate, Is.Not.Null);
+            Assert.That(detailsAfterUpdate.Peers, Has.Count.EqualTo(4), "Peer count should remain 4.");
+
+            // Check Peer B (modified)
+            var modifiedPeer = detailsAfterUpdate.Peers.FirstOrDefault(p => p.PublicKey == peerToModifyPubKey);
+            Assert.That(modifiedPeer, Is.Not.Null, $"Peer B ({peerToModifyPubKey}) not found after update.");
+            Assert.That(modifiedPeer.Endpoint, Is.EqualTo(newEndpoint), "Peer B endpoint was not updated.");
+            Assert.That(modifiedPeer.PresharedKeyExists, Is.True, "Peer B PSK should now exist.");
+
+            // Check another peer (e.g., Peer A) to ensure it's unaffected
+            var unaffectedPeer = detailsAfterUpdate.Peers.FirstOrDefault(p => p.PublicKey == Peer1PublicKey);
+            Assert.That(unaffectedPeer, Is.Not.Null, $"Peer A ({Peer1PublicKey}) missing.");
+            Assert.That(unaffectedPeer.Endpoint, Is.Null.Or.Empty.Or.EqualTo("(none)"), "Peer A endpoint should remain null or (none).");
+            Assert.That(unaffectedPeer.PresharedKeyExists, Is.False, "Peer A PSK should remain non-existent.");
+        }
+
+        [Test, Order(3)] // Run after modification test
+        public async Task SetPeerAsync_RemoveOneOfMultiplePeers_VerifiesRemoval()
+        {
+            // TestInterface is already up with 4 peers, one of which was modified.
+            string peerToRemovePubKey = Peer4PublicKey; // Peer D
+            int initialPeerCount = 4;
+
+            // Verify peer D exists before removal
+            var detailsBeforeRemove = await WgQuick.ShowInterfaceDetailsAsync(TestInterface, _integrationTestConfig);
+            Assert.That(detailsBeforeRemove.Peers.FirstOrDefault(p => p.PublicKey == peerToRemovePubKey), Is.Not.Null, $"Peer D ({peerToRemovePubKey}) should exist before removal attempt.");
+            Assert.That(detailsBeforeRemove.Peers, Has.Count.EqualTo(initialPeerCount), $"Initial peer count should be {initialPeerCount}.");
+
+
+            var removeOptions = new WgPeerUpdateOptions { Remove = true };
+            var setResult = await WgQuick.SetPeerAsync(TestInterface, peerToRemovePubKey, removeOptions, _integrationTestConfig);
+            Assert.That(setResult.Success, Is.True, $"SetPeerAsync failed to remove Peer D: {setResult.StandardError}");
+
+            var detailsAfterRemove = await WgQuick.ShowInterfaceDetailsAsync(TestInterface, _integrationTestConfig);
+            Assert.That(detailsAfterRemove, Is.Not.Null);
+            Assert.That(detailsAfterRemove.Peers.FirstOrDefault(p => p.PublicKey == peerToRemovePubKey), Is.Null, $"Peer D ({peerToRemovePubKey}) should not be found after removal.");
+            Assert.That(detailsAfterRemove.Peers, Has.Count.EqualTo(initialPeerCount - 1), $"Peer count should be {initialPeerCount - 1} after removal.");
+
+            // Verify other peers (e.g., Peer C which had PSK) are still present
+            Assert.That(detailsAfterRemove.Peers.FirstOrDefault(p => p.PublicKey == Peer3PublicKey), Is.Not.Null, $"Peer C ({Peer3PublicKey}) should still exist after Peer D removal.");
         }
     }
 }
