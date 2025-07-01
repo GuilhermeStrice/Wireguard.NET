@@ -1,0 +1,8 @@
+{
+  "allowSystemdManagement": true, // Often true for integration tests to attempt systemd operations
+  "systemdServicePath": "/etc/systemd/system", // Default, but can be overridden for tests
+  "wgPath": null, // Use PATH by default, can be overridden for test environment
+  "wgQuickPath": null, // Use PATH by default
+  "systemctlPath": null, // Use PATH by default
+  "wireguardConfigDirectory": "/etc/wireguard" // Default
+}
