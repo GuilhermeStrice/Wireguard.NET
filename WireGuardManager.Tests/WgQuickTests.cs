@@ -12,54 +12,106 @@ namespace WireGuardManager.Tests
     [TestFixture]
     public class WgQuickTests
     {
-        private string _testDir = null!;
-        private string _tempConfigJsonPath = null!;
-        private string _dummyConfFilePath = null!;
+        private Mock<IProcessRunner> _mockProcessRunner = null!;
+        private Mock<IFileSystem> _mockFileSystem = null!;
 
-        [OneTimeSetUp]
-        public void CheckCommands()
-        {
-            try { ProcessRunner.RunAsync("wg", "--version").Wait(); } // Check for wg
-            catch { Assert.Inconclusive("'wg' command not found or not working. Skipping WgQuickTests."); }
-            try { ProcessRunner.RunAsync("wg-quick", "--version").Wait(); } // Check for wg-quick
-            catch { Assert.Inconclusive("'wg-quick' command not found or not working. Skipping WgQuickTests."); }
-        }
+        // For WgSystemdManager's dependencies, as WgQuick calls it.
+        private Mock<IProcessRunner> _mockSystemdProcessRunner = null!;
+        private Mock<IFileSystem> _mockSystemdFileSystem = null!;
+
+        private string _testDir = null!;
+        private string _tempConfigJsonPath = null!; // For WgManagerConfig.LoadAsync
+        private string _dummyConfFilePath = null!;
 
 
         [SetUp]
         public void SetUp()
         {
-            _testDir = Path.Combine(TestContext.CurrentContext.TestDirectory, "WgQuickTestDir");
-            Directory.CreateDirectory(_testDir);
-            _tempConfigJsonPath = Path.Combine(_testDir, "test_config.json");
+            _mockProcessRunner = new Mock<IProcessRunner>();
+            _mockFileSystem = new Mock<IFileSystem>();
+            _mockSystemdProcessRunner = new Mock<IProcessRunner>();
+            _mockSystemdFileSystem = new Mock<IFileSystem>();
+
+            WgQuick.ProcessRunnerInstance = _mockProcessRunner.Object;
+            WgQuick.FileSystemProvider = _mockFileSystem.Object;
+
+            // Setup mocks for WgSystemdManager's static providers as WgQuick calls it directly
+            WgSystemdManager.ProcessRunnerInstance = _mockSystemdProcessRunner.Object;
+            WgSystemdManager.FileSystemProvider = _mockSystemdFileSystem.Object;
+
+            // Setup mock for WgManagerConfig's static FileSystemProvider
+            // This allows us to control what WgManagerConfig.LoadAsync() reads
+            _testDir = Path.Combine(TestContext.CurrentContext.TestDirectory, "WgQuickTest_ConfigDir");
+            Directory.CreateDirectory(_testDir); // Ensure it exists for Path.Combine
+            _tempConfigJsonPath = Path.Combine(_testDir, "config.json"); // Standard name WgManagerConfig.LoadAsync looks for
+            WgManagerConfig.FileSystemProvider = _mockFileSystem.Object; // WgManagerConfig uses its own static provider
+
             _dummyConfFilePath = Path.Combine(_testDir, "dummy.conf");
-            // Create a minimal valid .conf file for tests that need one for wg-quick to not complain about file missing
-            File.WriteAllText(_dummyConfFilePath, "[Interface]\nPrivateKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\nAddress = 10.0.0.1/24\n");
+            // Don't write real files anymore, mock FileSystemProvider.FileExists for paths if needed
         }
 
         [TearDown]
         public void TearDown()
         {
+            // Reset static providers to avoid interference between test fixtures
+            WgQuick.ProcessRunnerInstance = new ProcessRunner();
+            WgQuick.FileSystemProvider = new StandardFileSystem();
+            WgSystemdManager.ProcessRunnerInstance = new ProcessRunner();
+            WgSystemdManager.FileSystemProvider = new StandardFileSystem();
+            WgManagerConfig.FileSystemProvider = new StandardFileSystem();
+
             if (Directory.Exists(_testDir))
             {
                 Directory.Delete(_testDir, true);
             }
         }
 
-        private void CreateTestWgManagerConfig(bool allowSystemd, string systemdPath)
+        private void SetupMockWgManagerConfig(bool allowSystemd, string systemdPath, string? wgPath = null, string? wgQuickPath = null, string? systemctlPath = null)
         {
-            var configData = new { AllowSystemdManagement = allowSystemd, SystemdServicePath = systemdPath };
-            File.WriteAllText(_tempConfigJsonPath, JsonSerializer.Serialize(configData));
+            var configData = new {
+                AllowSystemdManagement = allowSystemd,
+                SystemdServicePath = systemdPath,
+                WgPath = wgPath,
+                WgQuickPath = wgQuickPath,
+                SystemctlPath = systemctlPath
+                // WireguardConfigDirectory will use default if not specified here
+            };
+            string jsonConfig = JsonSerializer.Serialize(configData);
+            // _tempConfigJsonPath is where WgManagerConfig.LoadAsync will look if no path is specified to it.
+            // WgQuick methods load it like: customConfig ?? await WgManagerConfig.LoadAsync();
+            // So we need to mock what WgManagerConfig.FileSystemProvider.ReadAllTextAsync returns for _tempConfigJsonPath
+            _mockFileSystem.Setup(fs => fs.FileExists(_tempConfigJsonPath)).Returns(true);
+            _mockFileSystem.Setup(fs => fs.ReadAllTextAsync(_tempConfigJsonPath)).ReturnsAsync(jsonConfig);
         }
 
 
         [Test]
-        public async Task ShowAll_ExecutesSuccessfully()
+        public async Task ShowAll_CallsWgShowCorrectly()
         {
-            var result = await WgQuick.ShowAll();
-            Assert.That(result, Is.Not.Null);
-            Assert.That(result.Success, Is.True, $"wg show all failed. Stderr: {result.StandardError}");
+            SetupMockWgManagerConfig(false, "/fake/systemd"); // Config for tool path resolution
+            _mockProcessRunner.Setup(p => p.RunAsync("wg", "show", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "wg show output", ""));
+
+            var result = await WgQuick.ShowAll(); // Will use internal WgManagerConfig.LoadAsync
+
+            Assert.That(result.Success, Is.True);
+            Assert.That(result.StandardOutput, Is.EqualTo("wg show output"));
+            _mockProcessRunner.Verify(p => p.RunAsync("wg", "show", null, It.IsAny<TimeSpan?>()), Times.Once);
         }
+
+        [Test]
+        public async Task Show_CallsWgShowInterfaceCorrectly()
+        {
+            SetupMockWgManagerConfig(false, "/fake/systemd");
+            string interfaceName = "wg0";
+            _mockProcessRunner.Setup(p => p.RunAsync("wg", $"show \"{interfaceName}\"", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, $"output for {interfaceName}", ""));
+
+            var result = await WgQuick.Show(interfaceName);
+            Assert.That(result.Success, Is.True);
+             _mockProcessRunner.Verify(p => p.RunAsync("wg", $"show \"{interfaceName}\"", null, It.IsAny<TimeSpan?>()), Times.Once);
+        }
+
 
         [Test]
         public void Show_InvalidInterfaceName_ThrowsInvalidInputException()
@@ -71,89 +123,122 @@ namespace WireGuardManager.Tests
         [Test]
         public void SyncConf_NonExistentFile_ThrowsFileNotFoundException()
         {
+            SetupMockWgManagerConfig(false, "/fake/systemd");
+            _mockFileSystem.Setup(fs => fs.FileExists("nonexistent.conf")).Returns(false);
             Assert.ThrowsAsync<FileNotFoundException>(() => WgQuick.SyncConf("wg0", "nonexistent.conf"));
         }
 
         [Test]
+        public async Task SyncConf_ValidFile_CallsWgSyncConf()
+        {
+            SetupMockWgManagerConfig(false, "/fake/systemd", wgPath: "custom_wg");
+            string interfaceName = "wg0";
+            string confPath = _dummyConfFilePath; // Use a path we know
+            _mockFileSystem.Setup(fs => fs.FileExists(confPath)).Returns(true);
+            _mockProcessRunner.Setup(p => p.RunAsync("custom_wg", $"syncconf \"{interfaceName}\" \"{confPath}\"", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "sync success", ""));
+
+            var result = await WgQuick.SyncConf(interfaceName, confPath);
+            Assert.That(result.Success, Is.True);
+            _mockProcessRunner.Verify(p => p.RunAsync("custom_wg", $"syncconf \"{interfaceName}\" \"{confPath}\"", null, It.IsAny<TimeSpan?>()), Times.Once);
+        }
+
+
+        [Test]
         public void Up_InvalidInterfaceName_WhenCheckingSystemd_ThrowsInvalidInputException()
         {
-            CreateTestWgManagerConfig(true, "/fake/systemd"); // Allow systemd to trigger interface name validation path
-            var config = WgManagerConfig.Load(_tempConfigJsonPath);
+            // Setup config that would allow systemd management to ensure IsValidInterfaceName is hit in that path.
+            SetupMockWgManagerConfig(true, "/fake/systemd");
 
-            var ex = Assert.ThrowsAsync<InvalidInputException>(() => WgQuick.Up("invalid!!name", config));
-            // The exception might come from WgSystemdManager if IsValidInterfaceName is called there first
+            var ex = Assert.ThrowsAsync<InvalidInputException>(() => WgQuick.Up("invalid!!name"));
             Assert.That(ex.Message, Does.Contain("Invalid interface name format"));
         }
 
         [Test]
         public async Task Up_InterfaceName_AllowSystemdFalse_SkipsSystemdAndCallsWgQuickUp()
         {
-            CreateTestWgManagerConfig(false, Path.Combine(_testDir, "fakesystemd_disabled"));
-            var config = WgManagerConfig.Load(_tempConfigJsonPath);
+            SetupMockWgManagerConfig(false, Path.Combine(_testDir, "fakesystemd_disabled"), wgQuickPath: "custom_wg-quick");
 
             using var sw = new StringWriter();
-            Console.SetOut(sw); // Capture console output
+            Console.SetOut(sw);
 
-            // Expect ExternalToolException because "wgtest_no_sysd" likely doesn't exist as a file or service.
-            Assert.ThrowsAsync<ExternalToolException>(async () => await WgQuick.Up("wgtest_no_sysd", config));
+            _mockProcessRunner.Setup(p => p.RunAsync("custom_wg-quick", "up \"wgtest_no_sysd\"", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(1, "", "interface not found or similar")); // Mock failure of wg-quick itself
 
-            Console.SetOut(new StreamWriter(Console.OpenStandardOutput()){AutoFlush = true}); // Restore console
+            Assert.ThrowsAsync<ExternalToolException>(async () => await WgQuick.Up("wgtest_no_sysd"));
+
+            Console.SetOut(new StreamWriter(Console.OpenStandardOutput()){AutoFlush = true});
             string output = sw.ToString();
 
             Assert.That(output, Does.Contain("Attempting implicit systemd service check for interface 'wgtest_no_sysd'. AllowSystemdManagement: False"));
             Assert.That(output, Does.Not.Contain("Ensuring systemd service for"), "Should not try to ensure service.");
+            _mockProcessRunner.Verify(p => p.RunAsync("custom_wg-quick", "up \"wgtest_no_sysd\"", null, It.IsAny<TimeSpan?>()), Times.Once);
         }
 
         [Test]
-        public void Up_InterfaceName_AllowSystemdTrue_AttemptsSystemd()
+        public async Task Up_InterfaceName_AllowSystemdTrue_AttemptsSystemdAndCallsWgQuickUp()
         {
-            CreateTestWgManagerConfig(true, Path.Combine(_testDir, "fakesystemd_enabled"));
-            Directory.CreateDirectory(Path.Combine(_testDir, "fakesystemd_enabled")); // Ensure fake path exists for file creation
-            var config = WgManagerConfig.Load(_tempConfigJsonPath);
+            string interfaceName = "wg_sysd_true";
+            string fakeSystemdPath = Path.Combine(_testDir, "fakesystemd_enabled_true");
+            SetupMockWgManagerConfig(true, fakeSystemdPath, wgQuickPath: "custom_wg-quick", systemctlPath: "custom_systemctl");
+
+            // Mock WgSystemdManager's FileSystemProvider to control service file existence check
+            _mockSystemdFileSystem.Setup(fs => fs.FileExists(Path.Combine(fakeSystemdPath, $"wg-quick@{interfaceName}.service"))).Returns(false);
+            _mockSystemdFileSystem.Setup(fs => fs.WriteAllTextAsync(It.IsAny<string>(), It.IsAny<string>())).Returns(Task.CompletedTask);
+
+            // Mock WgSystemdManager's ProcessRunnerInstance for systemctl calls
+            _mockSystemdProcessRunner.Setup(p => p.RunAsync("custom_systemctl", "daemon-reload", null, It.IsAny<TimeSpan?>()))
+                                     .ReturnsAsync(new ProcessExecutionResult(0, "", ""));
+            _mockSystemdProcessRunner.Setup(p => p.RunAsync("custom_systemctl", $"is-enabled wg-quick@{interfaceName}.service", null, It.IsAny<TimeSpan?>()))
+                                     .ReturnsAsync(new ProcessExecutionResult(1, "disabled", "")); // Simulate service is initially disabled
+            _mockSystemdProcessRunner.Setup(p => p.RunAsync("custom_systemctl", $"enable wg-quick@{interfaceName}.service", null, It.IsAny<TimeSpan?>()))
+                                     .ReturnsAsync(new ProcessExecutionResult(0, "", ""));
+
+            // Mock WgQuick's own ProcessRunnerInstance for the final wg-quick up call
+            _mockProcessRunner.Setup(p => p.RunAsync("custom_wg-quick", $"up \"{interfaceName}\"", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "Successfully up", ""));
+
 
             using var sw = new StringWriter();
             Console.SetOut(sw);
 
-            // This will likely throw ExternalToolException from wg-quick up (interface not found)
-            // or potentially PermissionsException/ExternalToolException from WgSystemdManager if systemctl fails.
-            // The goal is to check the log output.
-            try
-            {
-                 WgQuick.Up("wgtest_sysd_attempt", config).Wait(); // Use unique name
-            }
-            catch (AggregateException ae) when (ae.InnerExceptions.Any(e => e is ExternalToolException || e is PermissionsException ))
-            { /* Expected if wg-quick or systemctl fails */ }
-            catch (ExternalToolException) { /* Expected */ }
-            catch (PermissionsException) { /* Expected */ }
+            var result = await WgQuick.Up(interfaceName);
 
             Console.SetOut(new StreamWriter(Console.OpenStandardOutput()){AutoFlush = true});
             string output = sw.ToString();
-            TestContext.Progress.WriteLine($"Console output for Up_InterfaceName_AllowSystemdTrue:\n{output}");
 
-            Assert.That(output, Does.Contain("Attempting implicit systemd service check for interface 'wgtest_sysd_attempt'. AllowSystemdManagement: True"));
-            Assert.That(output, Does.Contain("Ensuring systemd service for wgtest_sysd_attempt"), "Should try to ensure service.");
+            Assert.That(result.Success, Is.True);
+            Assert.That(output, Does.Contain($"Attempting implicit systemd service check for interface '{interfaceName}'. AllowSystemdManagement: True"));
+            Assert.That(output, Does.Contain($"Ensuring systemd service for {interfaceName}"));
+            Assert.That(output, Does.Contain("Successfully wrote service file"));
+            Assert.That(output, Does.Contain("Successfully enabled service"));
 
-            if (output.Contains("Permission error during systemd management") || output.Contains("External tool error during systemd management"))
-            {
-                 Assert.Warn("Systemd management part seems to have failed (e.g., permissions or systemctl not functional). This is expected if not run as root or systemctl is problematic.");
-            }
+            _mockSystemdFileSystem.Verify(fs => fs.WriteAllTextAsync(Path.Combine(fakeSystemdPath, $"wg-quick@{interfaceName}.service"), It.IsAny<string>()), Times.Once);
+            _mockSystemdProcessRunner.Verify(p => p.RunAsync("custom_systemctl", "daemon-reload", null, It.IsAny<TimeSpan?>()), Times.Once);
+            _mockSystemdProcessRunner.Verify(p => p.RunAsync("custom_systemctl", $"enable wg-quick@{interfaceName}.service", null, It.IsAny<TimeSpan?>()), Times.Once);
+            _mockProcessRunner.Verify(p => p.RunAsync("custom_wg-quick", $"up \"{interfaceName}\"", null, It.IsAny<TimeSpan?>()), Times.Once);
         }
 
         [Test]
-        public void Up_FilePath_SkipsSystemd()
+        public async Task Up_FilePath_SkipsSystemdAndCallsWgQuickUp()
         {
-            CreateTestWgManagerConfig(true, "/fake/systemd"); // Systemd allowed, but should be ignored
-            var config = WgManagerConfig.Load(_tempConfigJsonPath);
+            SetupMockWgManagerConfig(true, "/fake/systemd", wgQuickPath: "path_wg-quick"); // Systemd allowed, but should be ignored
+
+            _mockFileSystem.Setup(fs => fs.FileExists(_dummyConfFilePath)).Returns(true); // Assume conf file exists
+            _mockProcessRunner.Setup(p => p.RunAsync("path_wg-quick", $"up \"{_dummyConfFilePath}\"", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "up success from path", ""));
 
             using var sw = new StringWriter();
             Console.SetOut(sw);
 
-            // Expect ExternalToolException because dummy.conf might not be a fully working config for `wg-quick up`
-            Assert.ThrowsAsync<ExternalToolException>(async () => await WgQuick.Up(_dummyConfFilePath, config));
+            var result = await WgQuick.Up(_dummyConfFilePath);
 
             Console.SetOut(new StreamWriter(Console.OpenStandardOutput()){AutoFlush = true});
             string output = sw.ToString();
+
+            Assert.That(result.Success, Is.True);
             Assert.That(output, Does.Not.Contain("Attempting implicit systemd service check"), "Should not attempt systemd check for file paths.");
+            _mockProcessRunner.Verify(p => p.RunAsync("path_wg-quick", $"up \"{_dummyConfFilePath}\"", null, It.IsAny<TimeSpan?>()), Times.Once);
         }
 
         [Test]

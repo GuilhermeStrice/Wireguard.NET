@@ -6,16 +6,50 @@ using System.Linq;
 using System.IO;
 using System; // For ArgumentNullException
 
+using Moq; // Added for Moq
+
 namespace WireGuardManager.Tests
 {
     [TestFixture]
     public class WgConfigTests
     {
+        private Mock<IFileSystem> _mockFileSystem = null!;
+
         // Valid keys for testing constructors and successful parsing
-        private const string ValidServerPrivateKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; // 44 chars, base64
+        private const string ValidServerPrivateKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
         private const string ValidPeerPublicKey = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
         private const string AnotherPeerPublicKey = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=";
         private const string ValidPresharedKey = "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=";
+
+        [SetUp] // Added SetUp
+        public void SetUp()
+        {
+            _mockFileSystem = new Mock<IFileSystem>();
+            WgConfig.FileSystemProvider = _mockFileSystem.Object;
+            // Also for WgManagerConfig if its FileSystemProvider is used by WgConfig, but it's not directly.
+        }
+
+        [TearDown] // Added TearDown
+        public void TearDown()
+        {
+            WgConfig.FileSystemProvider = new StandardFileSystem(); // Reset
+        }
+
+        [Test]
+        public void WgConfig_ToFile_WritesCorrectContent()
+        {
+            var serverConfig = new WgServerConfig(ValidServerPrivateKey);
+            var config = new WgConfig(serverConfig);
+            string expectedContent = config.ToString();
+            string testPath = "test.conf";
+
+            _mockFileSystem.Setup(fs => fs.WriteAllTextAsync(testPath, expectedContent))
+                           .Returns(Task.CompletedTask); // Mock the async write
+
+            config.ToFile(testPath); // This now blocks on the async call internally
+
+            _mockFileSystem.Verify(fs => fs.WriteAllTextAsync(testPath, expectedContent), Times.Once);
+        }
 
         [Test]
         public void WgServerConfig_Constructor_ValidKey_Succeeds()
@@ -181,31 +215,60 @@ PersistentKeepalive = 25
         {
             var serverConfig = new WgServerConfig(ValidServerPrivateKey);
             var config = new WgConfig(serverConfig);
-            string nonWritablePath = "/root/test_wg_config.conf"; // Assuming non-root execution
+            string testPath = "test.conf";
 
-            // This test might be flaky depending on actual test runner permissions.
-            // It's more of a conceptual check unless environment guarantees no write access.
-            try
-            {
-                var ex = Assert.Throws<PermissionsException>(() => config.ToFile(nonWritablePath));
-                Assert.That(ex.Operation, Is.EqualTo("write configuration file"));
-                Assert.That(ex.Resource, Is.EqualTo(nonWritablePath));
-            }
-            catch (AssertionException) when (Environment.UserName == "root") // if running as root, this test is not valid
-            {
-                Assert.Inconclusive("Test runner has root privileges, cannot test ToFile permission denial reliably.");
-            }
-            catch(Exception ex)
-            {
-                 Assert.Inconclusive($"Test setup for permission denied failed or other IO error: {ex.Message}");
-            }
+            _mockFileSystem.Setup(fs => fs.WriteAllTextAsync(testPath, It.IsAny<string>()))
+                           .ThrowsAsync(new UnauthorizedAccessException("Permission denied.")); // Simulate underlying exception
+
+            var ex = Assert.Throws<PermissionsException>(() => config.ToFile(testPath));
+            Assert.That(ex.Operation, Is.EqualTo("write configuration file"));
+            Assert.That(ex.Resource, Is.EqualTo(testPath));
+            Assert.That(ex.InnerException, Is.TypeOf<UnauthorizedAccessException>());
         }
 
         [Test]
         public void WgConfig_FromFile_NonExistent_ThrowsFileNotFoundException()
         {
-            Assert.Throws<FileNotFoundException>(() => WgConfig.FromFile("non_existent_file.conf"));
+            string testPath = "non_existent_file.conf";
+            _mockFileSystem.Setup(fs => fs.FileExists(testPath)).Returns(false);
+
+            Assert.Throws<FileNotFoundException>(() => WgConfig.FromFile(testPath));
+            _mockFileSystem.Verify(fs => fs.FileExists(testPath), Times.Once);
         }
+
+        [Test]
+        public void WgConfig_FromFile_ReadsAndParsesCorrectly()
+        {
+            string testPath = "existing.conf";
+            string fileContent = $"[Interface]\nPrivateKey = {ValidServerPrivateKey}\nAddress = 10.0.0.1/24\n";
+
+            _mockFileSystem.Setup(fs => fs.FileExists(testPath)).Returns(true);
+            _mockFileSystem.Setup(fs => fs.ReadAllTextAsync(testPath))
+                           .ReturnsAsync(fileContent); // Mock async read
+
+            var config = WgConfig.FromFile(testPath); // This now blocks on async call
+
+            Assert.That(config, Is.Not.Null);
+            Assert.That(config.Interface.PrivateKey, Is.EqualTo(ValidServerPrivateKey));
+            Assert.That(config.Interface.Address.First(), Is.EqualTo("10.0.0.1/24"));
+            _mockFileSystem.Verify(fs => fs.FileExists(testPath), Times.Once);
+            _mockFileSystem.Verify(fs => fs.ReadAllTextAsync(testPath), Times.Once);
+        }
+
+        [Test]
+        public void WgConfig_FromFile_ReadPermissionDenied_ThrowsPermissionsException()
+        {
+            string testPath = "existing_restricted.conf";
+            _mockFileSystem.Setup(fs => fs.FileExists(testPath)).Returns(true);
+            _mockFileSystem.Setup(fs => fs.ReadAllTextAsync(testPath))
+                           .ThrowsAsync(new UnauthorizedAccessException("Read permission denied."));
+
+            var ex = Assert.Throws<PermissionsException>(() => WgConfig.FromFile(testPath));
+            Assert.That(ex.Operation, Is.EqualTo("read configuration file"));
+            Assert.That(ex.Resource, Is.EqualTo(testPath));
+            Assert.That(ex.InnerException, Is.TypeOf<UnauthorizedAccessException>());
+        }
+
 
         [Test]
         public void WgConfig_AddPeer_Null_ThrowsArgumentNullException()

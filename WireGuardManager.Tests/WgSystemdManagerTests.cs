@@ -8,52 +8,56 @@ using System; // For ArgumentNullException
 
 namespace WireGuardManager.Tests
 {
+using NUnit.Framework;
+using WireGuardManager;
+using WireGuardManager.Utilities;
+using WireGuardManager.Exceptions;
+using Moq; // Added
+using System.IO;
+using System.Threading.Tasks;
+using System;
+
+namespace WireGuardManager.Tests
+{
     [TestFixture]
     public class WgSystemdManagerTests
     {
-        private string _testSystemdPath = null!;
+        private Mock<IProcessRunner> _mockProcessRunner = null!;
+        private Mock<IFileSystem> _mockFileSystem = null!;
         private WgManagerConfig _configAllowSystemd = null!;
         private WgManagerConfig _configDisallowSystemd = null!;
-        private const string TestInterfaceName = "wgtest0"; // Use const for clarity
-        private string _serviceFilePath = null!;
-        private static bool _systemctlAvailable = false;
-
-        [OneTimeSetUp]
-        public void CheckSystemctl()
-        {
-            try
-            {
-                var result = ProcessRunner.RunAsync("systemctl", "--version", timeout: TimeSpan.FromSeconds(5)).Result;
-                _systemctlAvailable = result.Success;
-                if (!_systemctlAvailable)
-                    TestContext.Progress.WriteLine("Warning: 'systemctl --version' failed. systemctl dependent tests will be inconclusive or may fail expectedly.");
-            }
-            catch (Exception ex) // Catches CommandNotFoundException or other process start issues
-            {
-                _systemctlAvailable = false;
-                TestContext.Progress.WriteLine($"Warning: 'systemctl' command not found or failed to start ({ex.GetType().Name}). systemctl dependent tests will be inconclusive.");
-            }
-        }
+        private const string TestInterfaceName = "wgtest0";
+        private string _testSystemdServiceDir = null!; // For mocked service files
+        private string _expectedServiceFilePath = null!;
 
         [SetUp]
         public void SetUp()
         {
-            _testSystemdPath = Path.Combine(TestContext.CurrentContext.TestDirectory, "fake_systemd_services");
-            Directory.CreateDirectory(_testSystemdPath);
-            _configAllowSystemd = new WgManagerConfig { AllowSystemdManagement = true, SystemdServicePath = _testSystemdPath };
-            _configDisallowSystemd = new WgManagerConfig { AllowSystemdManagement = false, SystemdServicePath = _testSystemdPath };
-            _serviceFilePath = Path.Combine(_testSystemdPath, $"wg-quick@{TestInterfaceName}.service");
+            _mockProcessRunner = new Mock<IProcessRunner>();
+            _mockFileSystem = new Mock<IFileSystem>();
 
-            if (File.Exists(_serviceFilePath)) File.Delete(_serviceFilePath);
+            WgSystemdManager.ProcessRunnerInstance = _mockProcessRunner.Object;
+            WgSystemdManager.FileSystemProvider = _mockFileSystem.Object;
+
+            // For WgManagerConfig.LoadAsync calls within WgSystemdManager if config isn't passed directly (e.g. GetSystemctlPathAsync)
+            // We need to ensure WgManagerConfig.FileSystemProvider is also the mock if we rely on its LoadAsync.
+            // However, WgSystemdManager methods take WgManagerConfig as a parameter, so we can control it directly.
+            // WgManagerConfig.FileSystemProvider = _mockFileSystem.Object; // Not strictly needed if config is always passed
+
+            _testSystemdServiceDir = Path.Combine(TestContext.CurrentContext.TestDirectory, "fake_systemd_services_for_WgSystemdManagerTests");
+            // No need to Directory.CreateDirectory(_testSystemdServiceDir) as FileSystemProvider is mocked.
+
+            _configAllowSystemd = new WgManagerConfig { AllowSystemdManagement = true, SystemdServicePath = _testSystemdServiceDir };
+            _configDisallowSystemd = new WgManagerConfig { AllowSystemdManagement = false, SystemdServicePath = _testSystemdServiceDir };
+            _expectedServiceFilePath = Path.Combine(_testSystemdServiceDir, $"wg-quick@{TestInterfaceName}.service");
         }
 
         [TearDown]
         public void TearDown()
         {
-            if (Directory.Exists(_testSystemdPath))
-            {
-                Directory.Delete(_testSystemdPath, true);
-            }
+            WgSystemdManager.ProcessRunnerInstance = new ProcessRunner();
+            WgSystemdManager.FileSystemProvider = new StandardFileSystem();
+            // WgManagerConfig.FileSystemProvider = new StandardFileSystem();
         }
 
         [Test]
@@ -74,83 +78,104 @@ namespace WireGuardManager.Tests
         {
             var result = await WgSystemdManager.EnsureServiceExistsAndEnabled(TestInterfaceName, _configDisallowSystemd);
             Assert.That(result, Is.False);
-            Assert.That(File.Exists(_serviceFilePath), Is.False);
+            _mockFileSystem.Verify(fs => fs.FileExists(It.IsAny<string>()), Times.Never);
+            _mockProcessRunner.Verify(pr => pr.RunAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<TimeSpan?>()), Times.Never);
         }
 
         [Test]
-        public async Task EnsureServiceExistsAndEnabled_ServiceFileAlreadyExists_SkipsCreationAndChecksEnable()
+        public async Task EnsureServiceExistsAndEnabled_ServiceFileAlreadyExists_ReturnsTrueAndSkipsFileWriteAndDaemonReload()
         {
-            if (!_systemctlAvailable) Assert.Inconclusive("systemctl not available for this test.");
+            _mockFileSystem.Setup(fs => fs.FileExists(_expectedServiceFilePath)).Returns(true);
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"is-enabled wg-quick@{TestInterfaceName}.service", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "enabled", "")); // Simulate already enabled
 
-            File.WriteAllText(_serviceFilePath, "existing_service_content"); // Pre-create
+            var result = await WgSystemdManager.EnsureServiceExistsAndEnabled(TestInterfaceName, _configAllowSystemd);
 
-            // This test will now proceed to call `systemctl is-enabled` and potentially `systemctl enable`.
-            // Expect it to pass if systemctl commands succeed, or throw if they fail (e.g. permissions).
-            try
-            {
-                var result = await WgSystemdManager.EnsureServiceExistsAndEnabled(TestInterfaceName, _configAllowSystemd);
-                Assert.That(result, Is.True); // True if systemctl commands succeed or service already enabled
-                Assert.That(File.ReadAllText(_serviceFilePath), Is.EqualTo("existing_service_content")); // File not changed
-            }
-            catch (ExternalToolException ex) when (ex.ToolName == "systemctl")
-            {
-                Assert.Pass($"Test passed conceptually: Service file existed. Systemctl command failed as expected without root: {ex.Message}");
-            }
-             catch (PermissionsException pex)
-            {
-                Assert.Pass($"Test passed conceptually: Service file existed. Systemctl command failed due to permissions as expected: {pex.Message}");
-            }
+            Assert.That(result, Is.True);
+            _mockFileSystem.Verify(fs => fs.WriteAllTextAsync(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+            _mockProcessRunner.Verify(pr => pr.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), "daemon-reload", null, It.IsAny<TimeSpan?>()), Times.Never);
+            _mockProcessRunner.Verify(pr => pr.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"enable wg-quick@{TestInterfaceName}.service", null, It.IsAny<TimeSpan?>()), Times.Never); // Should not call enable if already enabled
         }
 
         [Test]
-        public async Task EnsureServiceExistsAndEnabled_CreatesServiceFile_AndAttemptsSystemctl_WhenAllowed()
+        public async Task EnsureServiceExistsAndEnabled_ServiceNotEnabled_EnablesService()
         {
-            if (!_systemctlAvailable) Assert.Inconclusive("systemctl not available for this test.");
+            _mockFileSystem.Setup(fs => fs.FileExists(_expectedServiceFilePath)).Returns(true); // File exists
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"is-enabled wg-quick@{TestInterfaceName}.service", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(1, "disabled", "")); // Simulate disabled
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"enable wg-quick@{TestInterfaceName}.service", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "enabled", "")); // Simulate successful enable
 
-            try
-            {
-                bool success = await WgSystemdManager.EnsureServiceExistsAndEnabled(TestInterfaceName, _configAllowSystemd);
+            var result = await WgSystemdManager.EnsureServiceExistsAndEnabled(TestInterfaceName, _configAllowSystemd);
+            Assert.That(result, Is.True);
+            _mockProcessRunner.Verify(pr => pr.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"enable wg-quick@{TestInterfaceName}.service", null, It.IsAny<TimeSpan?>()), Times.Once);
+        }
 
-                // If we get here, it means all systemctl commands (daemon-reload, is-enabled, enable) were reported as successful by ProcessRunner.
-                // This would typically only happen if run with root or if systemctl is stubbed/mocked.
-                Assert.That(success, Is.True, "EnsureServiceExistsAndEnabled should return true on full success.");
-                Assert.That(File.Exists(_serviceFilePath), Is.True, "Service file should be created.");
-                // Further asserts on systemctl state would require actual system changes or more complex mocking.
-                TestContext.Progress.WriteLine($"Full success for EnsureServiceExistsAndEnabled (likely run with root or mocked systemctl). Service file created at {_serviceFilePath}.");
-            }
-            catch (CommandNotFoundException cnfe)
-            {
-                 Assert.Inconclusive($"systemctl command not found, cannot complete test: {cnfe.Message}");
-            }
-            catch (PermissionsException pex)
-            {
-                // This is an expected outcome if not running with root.
-                Assert.That(File.Exists(_serviceFilePath), Is.True, "Service file should still be created even if systemctl calls fail due to permissions.");
-                Assert.Pass($"Service file created. Systemctl operations failed due to permissions as expected: {pex.Message}");
-            }
-            catch (ExternalToolException etex)
-            {
-                // This can happen if systemctl commands fail for other reasons.
-                Assert.That(File.Exists(_serviceFilePath), Is.True, "Service file should still be created even if systemctl calls fail.");
-                Assert.Warn($"Service file created. Systemctl operations failed: {etex.Message}");
-            }
+
+        [Test]
+        public async Task EnsureServiceExistsAndEnabled_CreatesServiceFile_RunsDaemonReloadAndEnable_WhenAllowedAndNeeded()
+        {
+            _mockFileSystem.Setup(fs => fs.FileExists(_expectedServiceFilePath)).Returns(false); // File does not exist
+            _mockFileSystem.Setup(fs => fs.WriteAllTextAsync(_expectedServiceFilePath, It.IsAny<string>())).Returns(Task.CompletedTask);
+
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), "daemon-reload", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "", ""));
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"is-enabled wg-quick@{TestInterfaceName}.service", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(1, "disabled", "")); // Simulate disabled
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"enable wg-quick@{TestInterfaceName}.service", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, "", ""));
+
+            var result = await WgSystemdManager.EnsureServiceExistsAndEnabled(TestInterfaceName, _configAllowSystemd);
+
+            Assert.That(result, Is.True);
+            _mockFileSystem.Verify(fs => fs.WriteAllTextAsync(_expectedServiceFilePath, It.IsAny<string>()), Times.Once);
+            _mockProcessRunner.Verify(pr => pr.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), "daemon-reload", null, It.IsAny<TimeSpan?>()), Times.Once);
+            _mockProcessRunner.Verify(pr => pr.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"enable wg-quick@{TestInterfaceName}.service", null, It.IsAny<TimeSpan?>()), Times.Once);
         }
 
         [Test]
-        public void EnsureServiceExistsAndEnabled_FileWritePermissionError_ThrowsPermissionsException()
+        public void EnsureServiceExistsAndEnabled_FileWriteFails_ThrowsPermissionsException()
         {
-            // Attempt to use a path where writing should fail (e.g. a non-existent root-level directory without privileges)
-            // This test's reliability depends on the environment's strictness.
-            var restrictiveConfig = new WgManagerConfig { AllowSystemdManagement = true, SystemdServicePath = "/root_level_dir_no_perms_hopefully/system" };
-
-            // Ensure the directory doesn't exist and can't be created by non-root
-            if (Directory.Exists(Path.GetDirectoryName(restrictiveConfig.SystemdServicePath)))
-                 Assert.Inconclusive("Test path for permission error seems to exist, adjust test.");
+            _mockFileSystem.Setup(fs => fs.FileExists(_expectedServiceFilePath)).Returns(false);
+            _mockFileSystem.Setup(fs => fs.WriteAllTextAsync(_expectedServiceFilePath, It.IsAny<string>()))
+                           .ThrowsAsync(new UnauthorizedAccessException("Cannot write"));
 
             var ex = Assert.ThrowsAsync<PermissionsException>(() =>
-                WgSystemdManager.EnsureServiceExistsAndEnabled(TestInterfaceName, restrictiveConfig)
+                WgSystemdManager.EnsureServiceExistsAndEnabled(TestInterfaceName, _configAllowSystemd)
             );
-            Assert.That(ex.Message, Does.Contain("write systemd service file"));
+            Assert.That(ex.Operation, Is.EqualTo("write systemd service file"));
+            Assert.That(ex.Resource, Is.EqualTo(_expectedServiceFilePath));
+        }
+
+        [Test]
+        public void EnsureServiceExistsAndEnabled_DaemonReloadFails_ThrowsExternalToolException()
+        {
+            _mockFileSystem.Setup(fs => fs.FileExists(_expectedServiceFilePath)).Returns(false);
+            _mockFileSystem.Setup(fs => fs.WriteAllTextAsync(_expectedServiceFilePath, It.IsAny<string>())).Returns(Task.CompletedTask);
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), "daemon-reload", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(1, "", "daemon reload failed"));
+
+            var ex = Assert.ThrowsAsync<ExternalToolException>(() =>
+                WgSystemdManager.EnsureServiceExistsAndEnabled(TestInterfaceName, _configAllowSystemd)
+            );
+            Assert.That(ex.ToolName, Does.EndWith("systemctl"));
+            Assert.That(ex.Message, Does.Contain("daemon-reload"));
+        }
+
+        [Test]
+        public void EnsureServiceExistsAndEnabled_EnableFails_ThrowsExternalToolException()
+        {
+            _mockFileSystem.Setup(fs => fs.FileExists(_expectedServiceFilePath)).Returns(true); // File exists
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"is-enabled wg-quick@{TestInterfaceName}.service", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(1, "disabled", "")); // Simulate disabled
+            _mockProcessRunner.Setup(p => p.RunAsync(It.Is<string>(s => s.EndsWith("systemctl")), $"enable wg-quick@{TestInterfaceName}.service", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(127, "", "enable command failed")); // Simulate failed enable
+
+            var ex = Assert.ThrowsAsync<ExternalToolException>(() =>
+                WgSystemdManager.EnsureServiceExistsAndEnabled(TestInterfaceName, _configAllowSystemd)
+            );
+            Assert.That(ex.ToolName, Does.EndWith("systemctl"));
+            Assert.That(ex.Message, Does.Contain("enable wg-quick@wgtest0.service"));
         }
     }
 }

@@ -1,64 +1,139 @@
 using NUnit.Framework;
 using WireGuardManager;
-using WireGuardManager.Exceptions; // Added
+using WireGuardManager.Exceptions;
+using WireGuardManager.Utilities;
+using Moq;
 using System.Threading.Tasks;
-using WireGuardManager.Utilities; // For ValidationUtils
+using System; // For DllNotFoundException if checking specific inner exceptions
 
 namespace WireGuardManager.Tests
 {
     [TestFixture]
     public class WgKeyManagerTests
     {
-        // These tests require 'wg' command to be available in PATH.
-        // They act as integration tests for this component.
+        private Mock<IProcessRunner> _mockProcessRunner = null!;
+        private Mock<IFileSystem> _mockFileSystem = null!;
+        private WgManagerConfig _testConfig = null!; // For passing to methods if needed for path config
 
-        [OneTimeSetUp]
-        public void CheckWgCommand()
+        // Example valid keys for mocking process output
+        private const string MockPrivateKey = "PVTKEYPVTKEYPVTKEYPVTKEYPVTKEYPVTKEYPVTKEYAAA=";
+        private const string MockPublicKey = "PUBKEYPUBKEYPUBKEYPUBKEYPUBKEYPUBKEYPUBKEYAAA=";
+        private const string MockPsk = "PSKPSKPSKPSKPSKPSKPSKPSKPSKPSKPSKPSKPSKPSKAAA=";
+
+        [SetUp]
+        public void SetUp()
         {
-            try
-            {
-                // A quick check to see if 'wg' is likely available.
-                // ProcessRunner.RunAsync itself will throw CommandNotFoundException if 'wg' isn't found.
-                var result = ProcessRunner.RunAsync("wg", "--version").Result; // Simple, fast wg command
-                if (!result.Success && result.ExitCode !=0) // wg --version might return non-zero if no args given after it by some versions
-                {
-                    // wg with no args typically exits 0 and prints help.
-                    // if `wg --version` fails spectacularly, then `wg` is probably not right.
-                     var checkNoArg = ProcessRunner.RunAsync("wg","").Result;
-                     if(!checkNoArg.Success)
-                        Assert.Inconclusive("'wg' command does not seem to be installed or working correctly. Skipping WgKeyManagerTests.");
-                }
-            }
-            catch (CommandNotFoundException)
-            {
-                Assert.Inconclusive("'wg' command not found. Skipping WgKeyManagerTests.");
-            }
-            catch (System.Exception ex) // Catch other startup issues
-            {
-                 Assert.Inconclusive($"Could not verify 'wg' command presence. Skipping WgKeyManagerTests. Error: {ex.Message}");
-            }
+            _mockProcessRunner = new Mock<IProcessRunner>();
+            _mockFileSystem = new Mock<IFileSystem>();
+
+            WgKeyManager.ProcessRunnerInstance = _mockProcessRunner.Object;
+            WgKeyManager.FileSystemProvider = _mockFileSystem.Object;
+
+            _testConfig = new WgManagerConfig(); // Use default paths for tools unless specified
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            // Reset static providers to default instances if necessary, or ensure each test sets them up.
+            // For safety, reset them so other test fixtures aren't affected if they also use WgKeyManager.
+            WgKeyManager.ProcessRunnerInstance = new ProcessRunner();
+            WgKeyManager.FileSystemProvider = new StandardFileSystem();
+        }
+
+        [Test]
+        public async Task GenerateKeyPairAsync_SuccessfulExecution_ReturnsValidKeyPair()
+        {
+            _mockProcessRunner.Setup(p => p.RunAsync("wg", "genkey", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, MockPrivateKey + "\n", ""));
+
+            _mockFileSystem.Setup(fs => fs.GetTempFileName()).Returns("temp_private_key_file");
+            _mockFileSystem.Setup(fs => fs.WriteAllTextAsync("temp_private_key_file", MockPrivateKey)).Returns(Task.CompletedTask);
+
+            // Mocking the shell command for `wg pubkey < tempfile`
+            _mockProcessRunner.Setup(p => p.RunAsync("/bin/sh", It.Is<string>(s => s.Contains("wg pubkey < 'temp_private_key_file'")), null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, MockPublicKey + "\n", ""));
+
+            _mockFileSystem.Setup(fs => fs.FileExists("temp_private_key_file")).Returns(true); // For finally block
+            _mockFileSystem.Setup(fs => fs.DeleteFile("temp_private_key_file"));
+
+
+            var keyPair = await WgKeyManager.GenerateKeyPairAsync(_testConfig);
+
+            Assert.That(keyPair, Is.Not.Null);
+            Assert.That(keyPair.PrivateKey, Is.EqualTo(MockPrivateKey));
+            Assert.That(keyPair.PublicKey, Is.EqualTo(MockPublicKey));
+            Assert.That(ValidationUtils.IsValidWireGuardKey(keyPair.PrivateKey));
+            Assert.That(ValidationUtils.IsValidWireGuardKey(keyPair.PublicKey));
+
+            _mockProcessRunner.Verify(p => p.RunAsync("wg", "genkey", null, It.IsAny<TimeSpan?>()), Times.Once);
+            _mockFileSystem.Verify(fs => fs.GetTempFileName(), Times.Once);
+            _mockFileSystem.Verify(fs => fs.WriteAllTextAsync("temp_private_key_file", MockPrivateKey), Times.Once);
+            _mockProcessRunner.Verify(p => p.RunAsync("/bin/sh", It.Is<string>(s => s.Contains("wg pubkey < 'temp_private_key_file'")), null, It.IsAny<TimeSpan?>()), Times.Once);
+            _mockFileSystem.Verify(fs => fs.DeleteFile("temp_private_key_file"), Times.Once);
+        }
+
+        [Test]
+        public void GenerateKeyPairAsync_GenKeyFails_ThrowsExternalToolException()
+        {
+            _mockProcessRunner.Setup(p => p.RunAsync("wg", "genkey", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(1, "", "genkey error"));
+
+            var ex = Assert.ThrowsAsync<ExternalToolException>(() => WgKeyManager.GenerateKeyPairAsync(_testConfig));
+            Assert.That(ex.ToolName, Is.EqualTo("wg"));
+            Assert.That(ex.Message, Does.Contain("Failed to generate private key"));
+            Assert.That(ex.StandardError, Is.EqualTo("genkey error"));
+        }
+
+        [Test]
+        public void GenerateKeyPairAsync_PubKeyFails_ThrowsExternalToolException()
+        {
+            _mockProcessRunner.Setup(p => p.RunAsync("wg", "genkey", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, MockPrivateKey + "\n", ""));
+            _mockFileSystem.Setup(fs => fs.GetTempFileName()).Returns("temp_pk_file");
+            _mockFileSystem.Setup(fs => fs.WriteAllTextAsync("temp_pk_file", MockPrivateKey)).Returns(Task.CompletedTask);
+            _mockProcessRunner.Setup(p => p.RunAsync("/bin/sh", It.Is<string>(s => s.Contains("wg pubkey < 'temp_pk_file'")), null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(1, "", "pubkey error from tempfile")); // First pubkey attempt fails
+
+            // Mock the fallback echo pipe attempt to also fail
+            _mockProcessRunner.Setup(p => p.RunAsync("/bin/sh", It.Is<string>(s => s.Contains($"echo '{MockPrivateKey}' | 'wg' pubkey")), null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(1, "", "pubkey error from echo"));
+
+
+            var ex = Assert.ThrowsAsync<ExternalToolException>(() => WgKeyManager.GenerateKeyPairAsync(_testConfig));
+            Assert.That(ex.ToolName, Is.EqualTo("wg"));
+            Assert.That(ex.Message, Does.Contain("Failed to generate public key"));
+            Assert.That(ex.Message, Does.Contain("Both temp file and echo pipe methods failed"));
+            Assert.That(ex.StandardError, Is.EqualTo("pubkey error from echo"));
         }
 
 
         [Test]
-        public async Task GenerateKeyPairAsync_ReturnsValidKeyPair()
+        public async Task GeneratePresharedKeyAsync_SuccessfulExecution_ReturnsValidKey()
         {
-            WgKeyManager.KeyPair keyPair = await WgKeyManager.GenerateKeyPairAsync();
+            _mockProcessRunner.Setup(p => p.RunAsync("wg", "genpsk", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(0, MockPsk + "\n", ""));
 
-            Assert.That(keyPair, Is.Not.Null, "KeyPair should not be null.");
-            Assert.That(ValidationUtils.IsValidWireGuardKey(keyPair.PrivateKey), Is.True, $"Generated PrivateKey format is invalid: {keyPair.PrivateKey}");
-            Assert.That(ValidationUtils.IsValidWireGuardKey(keyPair.PublicKey), Is.True, $"Generated PublicKey format is invalid: {keyPair.PublicKey}");
+            string psk = await WgKeyManager.GeneratePresharedKeyAsync(_testConfig);
+
+            Assert.That(psk, Is.EqualTo(MockPsk));
+            Assert.That(ValidationUtils.IsValidWireGuardKey(psk));
+            _mockProcessRunner.Verify(p => p.RunAsync("wg", "genpsk", null, It.IsAny<TimeSpan?>()), Times.Once);
         }
 
         [Test]
-        public async Task GeneratePresharedKeyAsync_ReturnsValidKey()
+        public void GeneratePresharedKeyAsync_GenPskFails_ThrowsExternalToolException()
         {
-            string psk = await WgKeyManager.GeneratePresharedKeyAsync();
+            _mockProcessRunner.Setup(p => p.RunAsync("wg", "genpsk", null, It.IsAny<TimeSpan?>()))
+                              .ReturnsAsync(new ProcessExecutionResult(1, "", "genpsk error"));
 
-            Assert.That(ValidationUtils.IsValidWireGuardKey(psk), Is.True, $"Generated PresharedKey (async) format is invalid: {psk}");
+            var ex = Assert.ThrowsAsync<ExternalToolException>(() => WgKeyManager.GeneratePresharedKeyAsync(_testConfig));
+            Assert.That(ex.ToolName, Is.EqualTo("wg"));
+            Assert.That(ex.Message, Does.Contain("Failed to generate preshared key"));
+            Assert.That(ex.StandardError, Is.EqualTo("genpsk error"));
         }
 
-        // Tests for Pure C# methods
+        // Tests for Pure C# methods (these do not use IProcessRunner or IFileSystem directly from WgKeyManager)
         [Test]
         public void GenerateKeyPairPureCSharp_ReturnsValidKeyPair()
         {
